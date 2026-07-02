@@ -1,0 +1,27 @@
+[project]
+name = "koretex-agent"
+version = "0.1.0"
+description = "Lightweight self-funding agent on the Koretex network — one kernel, four profiles"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+koretex-agent = "koretex_agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["koretex_agent*"]
+
+[tool.setuptools.package-data]
+koretex_agent = ["profiles/*.md"]
