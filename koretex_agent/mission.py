@@ -36,6 +36,7 @@ class TaskRecord(BaseModel):
     assertions: list[Assertion]
     status: str = "pending"  # pending | cleared | failed
     attempts: int = 0
+    revised: bool = False  # one bounded replan per task when a worker raises attention
     regressions: list[str] = []
 
 
@@ -90,6 +91,33 @@ class Mission:
         self.state.status = "running"
         self._save()
 
+    # ── attention → bounded replan: the planner routes around a blockage ──
+    def revise(self, task: TaskRecord, report: str) -> None:
+        from .schemas import PlanTask
+
+        msgs = [
+            {"role": "system", "content": ORCHESTRATOR.system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    f"Mission brief:\n{self.state.brief}\n\n"
+                    f"Task {task.task_id} ('{task.description}') is blocked. "
+                    f"Worker report: {report}\n\n"
+                    "Emit a revised PlanTask (same task_id) that achieves the same "
+                    "goal while routing around the blockage, staying within the brief."
+                ),
+            },
+        ]
+        usage_sink: list[dict] = []
+        revised, _ = constrained_call(self.client, msgs, PlanTask, usage_sink)
+        for u in usage_sink:
+            self.state.tokens["prompt"] += u.get("prompt_tokens", 0)
+            self.state.tokens["completion"] += u.get("completion_tokens", 0)
+        task.description = revised.description
+        task.assertions = revised.assertions
+        task.revised = True
+        self._save()
+
     # ── one profile session inside this mission's workdir ────────────────
     def _run(self, profile: Profile, task: str, assertions: list[Assertion],
              context: str, handoff_model):
@@ -141,10 +169,10 @@ class Mission:
                 continue
             while task.attempts < MAX_ATTEMPTS_PER_TASK:
                 task.attempts += 1
-                context = ""
+                context = f"Mission brief (global constraints apply):\n{self.state.brief}"
                 if task.regressions:
-                    context = (
-                        "Previous attempt failed validation. Fix these specific "
+                    context += (
+                        "\n\nPrevious attempt failed validation. Fix these specific "
                         "failures (evidence below) — do not start over:\n\n"
                         + "\n\n".join(task.regressions[-4:])
                     )
@@ -152,9 +180,12 @@ class Mission:
                                  context, WorkHandoff)
                 wh = WorkHandoff.model_validate(work.handoff)
                 if wh.request_attention:
-                    task.status = "failed"
                     task.regressions.append(f"worker requested attention: {wh.report[:500]}")
-                    break
+                    if task.revised:
+                        task.status = "failed"
+                        break
+                    self.revise(task, wh.report[:800])
+                    continue
                 ok, regressions = self._validate(task)
                 if ok:
                     task.status = "cleared"
