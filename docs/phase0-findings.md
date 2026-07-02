@@ -38,10 +38,22 @@ Two findings that directly shape the Hermes-lite fork:
 - Hermes config has no CLI override for `base_url`; switching between the dispatcher and local Ollama means editing `~/.hermes/config.yaml` (backup kept at `config.yaml.bak.koretex-dispatcher`). The fork should make endpoint switching first-class.
 - Ollama env (context length, KV quantization) requires restarting the server process; the Homebrew service doesn't carry env vars by default.
 
-## Mission 1 measurements (to append on completion)
+## Mission 1: an accidental — and valuable — naive baseline
+
+Mission 1 (build `csv2json` + pytest suite, "complete when all tests pass") ran **without Zenith tools** due to a wiring gap discovered mid-run: Hermes does not auto-discover a workspace `.mcp.json` (that is a Claude Code convention; Hermes uses its own per-profile registry via `hermes mcp add`). Zenith's `init --agent hermes` stages `.mcp.json` and tells you to "just start hermes" — advertised integration, but the last mile is missing. The fix was one command (`hermes mcp add zenith --command uv --env ... --args run --project <zenith-src> zenith-server --mode orchestrator`), which connected and enabled all 7 orchestrator tools.
+
+So mission 1 became the **harness-free control**: qwen3:14b, given the same brief, just built the tool directly. Result after ~75 minutes (still running when stopped):
+
+- `cli.py`: plausible and essentially correct (argparse, csv.DictReader, --pretty, error handling)
+- `tests/test_csv2json.py`: **SyntaxError — unterminated triple-quoted string. The test suite could not even be collected.**
+- The agent did not catch this. Its own explicit acceptance criterion ("all tests pass") was unmet for over an hour with no self-correction.
+
+This is precisely the small-model failure mode the architecture bets on: **plausible work + confident non-verification.** The mission-2 rerun (same brief, Zenith properly wired) measures whether independent validators catch what the naive loop missed.
+
+## Mission 2 measurements (Zenith wired; to append on completion)
 
 - [ ] Did the orchestrator follow the Zenith MCP protocol (start_project → submit_plan → advance/decide loops)?
 - [ ] JSON handoff validity rate (WorkHandoff/ValidateHandoff)
-- [ ] Validator behavior: rubber-stamp vs genuine catches
+- [ ] Validator behavior: rubber-stamp vs genuine catches (does it catch a broken test suite?)
 - [ ] Premature-completion catches (terminal review)
 - [ ] Wall-clock and token totals per mission
