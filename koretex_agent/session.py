@@ -8,12 +8,39 @@ from __future__ import annotations
 
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .client import ChatResult, Client
 from .schemas import WorkOrder, response_schema
 from .tools import Toolbox
 from .trajectory import TrajectoryRecorder
+
+
+def constrained_call(
+    client: Client,
+    messages: list[dict],
+    model_cls: type[BaseModel],
+    usage_sink: list[dict] | None = None,
+    attempts: int = 3,
+):
+    """Chat with grammar-constrained decoding, validate client-side (the wire
+    schema is sanitized — pydantic holds the full contract), retry on mismatch
+    with the validation error fed back."""
+    msgs = list(messages)
+    last: ValidationError | None = None
+    for _ in range(attempts):
+        res = client.chat(msgs, response_format=response_schema(model_cls))
+        if usage_sink is not None:
+            usage_sink.append(res.usage)
+        try:
+            return model_cls.model_validate_json(res.message.get("content") or "{}"), res
+        except ValidationError as e:
+            last = e
+            msgs = msgs + [
+                res.message,
+                {"role": "user", "content": f"Invalid {model_cls.__name__}: {e}. Emit corrected JSON only."},
+            ]
+    raise RuntimeError(f"model failed to produce valid {model_cls.__name__}: {last}")
 
 
 class SessionResult(BaseModel):
@@ -85,10 +112,11 @@ def run_session(
             ),
         }
     )
-    res = client.chat(messages, response_format=response_schema(handoff_model))
-    ptok += res.usage.get("prompt_tokens", 0)
-    ctok += res.usage.get("completion_tokens", 0)
-    handoff = handoff_model.model_validate_json(res.message.get("content") or "{}")
+    usage_sink: list[dict] = []
+    handoff, _ = constrained_call(client, messages, handoff_model, usage_sink)
+    for u in usage_sink:
+        ptok += u.get("prompt_tokens", 0)
+        ctok += u.get("completion_tokens", 0)
     rec.verdict(handoff.model_dump())
 
     return SessionResult(

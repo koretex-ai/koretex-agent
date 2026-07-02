@@ -18,7 +18,7 @@ from .schemas import Assertion, ValidateHandoff, WorkHandoff, WorkOrder
 from .session import run_session
 from .tools import Toolbox
 
-HANDOFFS = {"worker": WorkHandoff, "validator": ValidateHandoff}
+HANDOFFS = {"worker": WorkHandoff, "validator": ValidateHandoff, "scrutiny": ValidateHandoff}
 
 
 def parse_assert(spec: str) -> Assertion:
@@ -34,7 +34,7 @@ def parse_assert(spec: str) -> Assertion:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="koretex-agent")
-    ap.add_argument("profile", choices=list(ALL))
+    ap.add_argument("profile", choices=[*HANDOFFS, "mission"])
     ap.add_argument("--task", required=True)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--assert", dest="asserts", action="append", default=[])
@@ -43,12 +43,21 @@ def main() -> None:
     ap.add_argument("--base-url")
     args = ap.parse_args()
 
-    profile = ALL[args.profile]
     cfg = ModelConfig()
     if args.model:
         cfg.model = args.model
     if args.base_url:
         cfg.base_url = args.base_url
+
+    if args.profile == "mission":
+        from .mission import Mission
+
+        m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir)
+        state = m.run()
+        print(state.model_dump_json(indent=2))
+        return
+
+    profile = ALL[args.profile]
 
     order = WorkOrder(
         order_id=f"cli-{uuid.uuid4().hex[:8]}",

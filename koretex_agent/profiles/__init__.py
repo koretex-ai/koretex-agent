@@ -31,4 +31,20 @@ VALIDATOR = Profile(
     max_turns=12,
 )
 
-ALL = {p.name: p for p in (WORKER, VALIDATOR)}
+SCRUTINY = Profile(
+    name="scrutiny",
+    tools=("run_shell", "read_file", "search_files"),
+    prefix_budget_tokens=2_500,
+    max_turns=12,
+)
+
+# Planning is one constrained-decoding call, not an agentic session — no tools.
+# This is the structural fix for the Phase 0 orchestrator collapse.
+ORCHESTRATOR = Profile(
+    name="orchestrator",
+    tools=(),
+    prefix_budget_tokens=5_000,
+    max_turns=1,
+)
+
+ALL = {p.name: p for p in (WORKER, VALIDATOR, SCRUTINY, ORCHESTRATOR)}

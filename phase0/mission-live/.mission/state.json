@@ -1,0 +1,12 @@
+{
+ "mission_id": "m-d2cb6ea4",
+ "brief": "Build a Python CLI tool csv2json: cli.py reads a CSV file path argument and prints a JSON array of row objects to stdout; a --pretty flag produces indented output; quoted fields containing commas and missing values must be handled correctly; include a pytest test suite under tests/ (verify with python3 -m pytest if available, else run cli.py directly on sample files); include a README.md with usage examples. Use only the Python standard library.",
+ "workdir": "/Users/moreshkokane/code/koretex-agent/phase0/mission-live",
+ "status": "planning",
+ "tasks": [],
+ "terminal_review": null,
+ "tokens": {
+  "prompt": 0,
+  "completion": 0
+ }
+}
