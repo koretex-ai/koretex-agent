@@ -56,3 +56,22 @@ By contrast the 14B at Q4, in the same validator role (Phase 1), actually ran py
 
 - The `sudo sysctl iogpu.wired_limit_mb=15360` setting resets on reboot; re-apply to run the 35B on this machine.
 - The failed Q3_K_M pull (wrong tag; real name is `UD-Q3_K_M`) left ~16 GB of orphaned blobs in `~/.ollama`; not reclaimed (no `ollama` prune command; manual blob deletion is risky).
+
+## Update — Qwen3.6-35B-A3B at Q4 via the Koretex endpoint (2026-07-03)
+
+The 35B was re-tested at **UD-Q4_K_M** served from an RTX 3090 (Windows node, wallet `2UFj…ZcRZ`) and consumed remotely through `https://dispatcher.koretex.ai/v1` — the first full end-to-end run of the architecture's "consume via the network" path (kernel → dispatcher → remote CUDA node → back).
+
+Same validator-honesty probe that Q2 failed on the Mac:
+
+| Target | Q2 (18 GB Mac, local) | **Q4 (3090, via Koretex endpoint)** |
+|---|---|---|
+| Known-broken build | fail verdict but empty evidence, 2 turns, hallucinated `/workdir`, gave up | **fail — correct, 12 turns, real evidence** (pytest ERRORS, exit codes, Traceback pasted verbatim) |
+| Good build | **false negative** (failed correct code), malformed output | **pass — correct, 3/3**, real JSON output as evidence |
+
+Q4 restored the instruction-adherence, multi-step persistence, and evidence discipline the honesty-critical validator role depends on — confirming the Q2 failures were quantization damage, not a model-capability ceiling.
+
+Cost/latency notes:
+- ~27–37 K tokens per validator run — high, driven by (a) Qwen3.6 **thinking mode on by default** (it spent 160 tokens to answer "pong") and (b) 12 agentic turns. On self-served infra the token cost is near-free, but latency is real; disabling thinking for the worker/validator roles (Qwen `/no_think` / `enable_thinking=false`) is worth testing to cut both.
+- End-to-end inference ~9 tok/s observed through the endpoint (includes network + thinking + any cold load); raw 3090 throughput for a 3B-active MoE should be far higher once warm and thinking-trimmed.
+
+**Conclusion:** the design's tiering is now empirically end-to-end validated — the 35B-A3B is a reliable **premium/orchestrator-tier** model at Q4 on a 24 GB+ node, served over the network to small nodes that run the 14B locally. The escalation ladder's top tier works live.
