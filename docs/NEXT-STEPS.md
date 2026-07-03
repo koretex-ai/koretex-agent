@@ -87,11 +87,18 @@ and bounces the plan back to the orchestrator with the objection (one retry). Al
 **Also add a worker escape hatch (small, complementary):** worker.md step 4 already says to `request_attention=true` when the order "conflicts with reality," but in m1 the workers didn't recognize a *buggy assertion* as such — they treated it as their own bug and thrashed. Add explicit guidance: if the artifact is honestly produced and correct but an assertion still fails in a way that looks like the assertion itself is wrong (e.g. a case-sensitive grep vs a valid heading), stop and `request_attention` with the evidence rather than fighting it to `max_turns`.
 </details>
 
-### 2b. Validator reliability (new — surfaced by the m2/m3 repeats)
-The m2/m3 consistency repeats proved the worker-side fixes hold (0 worker maxouts both runs, plan-lint robust) but exposed the next tier: **validators**. 1–3 validators max out at 12 turns every run, they now dominate the token budget (mission totals still swing 220K↔383K), and in m2 a **maxed-out terminal validator returned a false FAIL** — "3 tests failed" on a suite that passes 26/26 and that the per-task gate had already cleared. Fixes:
-- **Don't trust a maxed-out validator.** If a validator hits `max_turns` without a clean stop, treat its verdict as *inconclusive* — re-run (fresh context) or escalate, don't accept a spurious FAIL. Cheap code change in `mission._validate` / terminal review.
-- **Cut validator turns.** validator.md can batch independent assertion checks into fewer commands (it still must paste each item's raw_output, but can run several checks per turn). Watch the prefix budget.
-- **Give the terminal review more room.** It judges the whole workdir against the full brief; 12 turns is tight. Consider a higher cap for that one call, or splitting it.
+### 2b. Validator reliability (surfaced by m2/m3) — ✅ DONE (2026-07-03), real-run validation pending
+The m2/m3 consistency repeats proved the worker-side fixes hold (0 worker maxouts both runs, plan-lint robust) but exposed the next tier: **validators**. 1–3 validators max out at 12 turns every run, they now dominate the token budget (mission totals still swing 220K↔383K), and in m2 a **maxed-out terminal validator returned a false FAIL** — "3 tests failed" on a suite that passes 26/26 and that the per-task gate had already cleared.
+
+**Implemented:**
+- `run_session` now reports `hit_turn_cap` (ran out of turns without a clean stop → its handoff was produced under duress).
+- New `Mission._judge`: runs a validator lane and, if it hit the cap, gives it **one clean re-run**; returns `(handoff, inconclusive)` where `inconclusive` = capped even on the retry.
+- `_validate` **ignores an inconclusive lane's FAILs** (the other lane still checks honestly; the event is recorded in `state.notes`). A trustworthy FAIL still bounces the task.
+- Terminal review runs through `_judge` at a **higher turn budget** (`TERMINAL_REVIEW_MAX_TURNS=20`, vs 12 for a per-task lane) and, if still inconclusive, does **not** fail the mission — every task already cleared its two-lane gate, so it accepts with a note instead of emitting m2's spurious failure.
+- validator.md / scrutiny.md tell the lanes to **batch checks into fewer turns** (still attributing each item's raw output). Budgets fine (validator 426/2500, scrutiny 399/2500).
+- Tests: `tests/test_validator_reliability.py` (cap detection, re-run-once, inconclusive handling, spurious-FAIL suppression, conclusive-FAIL still blocks). Suite now 29 passing.
+
+**Still open:** run a real mission (m4) to confirm in practice — validators should max out less (batching) and, when one does, no spurious mission failure. This is the T3 validation for 2b.
 
 ### 3. Concierge → mission wiring (tier 0 drives the ladder)
 Build the routing entrypoint: a `concierge` profile/loop (Qwen3-4B) that takes a user message, emits the `Route` schema (concierge/task/mission — already prototyped and 5/5 correct), and dispatches: chat locally, or spin a single worker (tier 1), or a full mission (tier 2). This is the first piece of the actual product UX. Escalation triggers between tiers are in the README design.

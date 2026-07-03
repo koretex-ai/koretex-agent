@@ -54,6 +54,9 @@ class SessionResult(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     session_id: str
+    hit_turn_cap: bool = False  # ran out of turns without ever stopping cleanly —
+    # the handoff is then produced under duress and its verdict is unreliable
+    # (a cut-off validator emits false FAILs — see mission run m2, 2026-07-03).
 
 
 def strip_thinking(msg: dict) -> dict:
@@ -92,6 +95,7 @@ def run_session(
 
     ptok = ctok = 0
     turns = 0
+    stopped_cleanly = False
     for turns in range(1, max_turns + 1):
         res: ChatResult = client.chat(
             messages, tools=toolbox.schemas(), reasoning_effort=effort
@@ -105,6 +109,7 @@ def run_session(
 
         calls = msg.get("tool_calls") or []
         if not calls:
+            stopped_cleanly = True
             break  # model believes it is finished
         for call in calls:
             fn = call["function"]
@@ -144,6 +149,7 @@ def run_session(
         prompt_tokens=ptok,
         completion_tokens=ctok,
         session_id=rec.session_id,
+        hit_turn_cap=not stopped_cleanly,
     )
 
 

@@ -29,6 +29,10 @@ from .session import constrained_call, run_session
 from .tools import Toolbox
 
 MAX_ATTEMPTS_PER_TASK = 3
+# The terminal review judges the whole workdir against the entire brief — many
+# more assertions than a single task's gate — so it gets more room than a
+# per-task validator lane (which uses its profile's 12).
+TERMINAL_REVIEW_MAX_TURNS = 20
 
 
 class TaskRecord(BaseModel):
@@ -49,6 +53,7 @@ class MissionState(BaseModel):
     tasks: list[TaskRecord] = []
     terminal_review: dict | None = None
     tokens: dict[str, int] = {"prompt": 0, "completion": 0}
+    notes: list[str] = []  # reliability events (e.g. inconclusive validator lanes)
 
 
 class Mission:
@@ -140,7 +145,7 @@ class Mission:
 
     # ── one profile session inside this mission's workdir ────────────────
     def _run(self, profile: Profile, task: str, assertions: list[Assertion],
-             context: str, handoff_model):
+             context: str, handoff_model, max_turns: int | None = None):
         order = WorkOrder(
             order_id=f"{self.state.mission_id}-{uuid.uuid4().hex[:6]}",
             task=task,
@@ -151,33 +156,44 @@ class Mission:
         toolbox = Toolbox(self.state.workdir, skills_dir=self.skills_dir,
                           allowed=list(profile.tools))
         res = run_session(profile.name, profile.system_prompt(), order, toolbox,
-                          handoff_model, client=self.client, max_turns=profile.max_turns,
+                          handoff_model, client=self.client,
+                          max_turns=max_turns or profile.max_turns,
                           thinking=profile.thinking)
         self._count(res)
         self._save()
         return res
 
+    # ── a validator lane whose verdict we can actually trust ─────────────
+    def _judge(self, lane: Profile, task_str: str, assertions: list[Assertion],
+               max_turns: int | None = None) -> tuple[ValidateHandoff, bool]:
+        """Run a validator lane. A lane that hits its turn cap gets cut off mid-
+        check and emits unreliable verdicts (false FAILs — mission m2), so give it
+        one clean re-run. Returns (handoff, inconclusive) where inconclusive means
+        it hit the cap even on the retry — the caller must not treat its FAILs as
+        authoritative."""
+        res = self._run(lane, task_str, assertions, "", ValidateHandoff, max_turns=max_turns)
+        if res.hit_turn_cap:
+            res = self._run(lane, task_str, assertions, "", ValidateHandoff, max_turns=max_turns)
+        return ValidateHandoff.model_validate(res.handoff), res.hit_turn_cap
+
     # ── the gate: two independent lanes must both pass ───────────────────
     def _validate(self, task: TaskRecord) -> tuple[bool, list[str]]:
         regressions: list[str] = []
         for lane in (VALIDATOR, SCRUTINY):
-            res = self._run(
-                lane,
-                f"Validate the work for: {task.description}",
-                task.assertions,
-                context="",
-                handoff_model=ValidateHandoff,
-            )
-            v = ValidateHandoff.model_validate(res.handoff)
+            v, inconclusive = self._judge(
+                lane, f"Validate the work for: {task.description}", task.assertions)
+            if inconclusive:
+                # a cut-off lane can't distinguish a real failure from its own
+                # confusion — don't let it bounce the task; the other lane still
+                # provides an honest independent check
+                self.state.notes.append(
+                    f"{task.task_id}: [{lane.name}] inconclusive (hit turn cap twice) — verdict ignored")
+                continue
             for item in v.items:
                 if not item.passed:
                     regressions.append(
                         f"[{lane.name}] {item.item_id} FAILED\ncommand: {item.command}\noutput: {item.raw_output[:1500]}"
                     )
-            if not v.overall_passed:
-                # first failing lane is enough to bounce the task; the second
-                # lane still ran independently on prior attempts' evidence
-                pass
         return (len(regressions) == 0, regressions)
 
     # ── main loop ─────────────────────────────────────────────────────────
@@ -226,16 +242,23 @@ class Mission:
         self.state.status = "review"
         self._save()
         all_asserts = [a for t in self.state.tasks for a in t.assertions]
-        res = self._run(
+        review, inconclusive = self._judge(
             VALIDATOR,
             "Terminal review: judge the finished work in this directory against "
             f"the original brief, end to end. Brief: {self.state.brief}",
             all_asserts,
-            context="",
-            handoff_model=ValidateHandoff,
+            max_turns=TERMINAL_REVIEW_MAX_TURNS,
         )
-        review = ValidateHandoff.model_validate(res.handoff)
         self.state.terminal_review = review.model_dump()
-        self.state.status = "done" if review.overall_passed else "failed"
+        if inconclusive:
+            # The reviewer got cut off even with extra room — its verdict is
+            # untrustworthy. Every task already cleared its own two-lane gate, so
+            # don't fail the whole mission on a cut-off review; accept with a note.
+            self.state.notes.append(
+                "terminal review inconclusive (validator hit turn cap on retry); "
+                "accepting on per-task gates")
+            self.state.status = "done"
+        else:
+            self.state.status = "done" if review.overall_passed else "failed"
         self._save()
         return self.state

@@ -34,7 +34,7 @@ def _handoffs(*sequence):
     """Yield successive handoffs for _run calls in order."""
     it = iter(sequence)
 
-    def side_effect(profile, task, assertions, context, handoff_model):
+    def side_effect(profile, task, assertions, context, handoff_model, max_turns=None):
         return fake_session(next(it))
 
     return side_effect
@@ -76,7 +76,7 @@ def test_failed_validation_retries_with_regression_context(tmp_path):
                      DONE_W, PASS_V, PASS_V,   # attempt 2: both lanes pass
                      PASS_V])                  # terminal review
 
-    def run_spy(profile, task, assertions, context, handoff_model):
+    def run_spy(profile, task, assertions, context, handoff_model, max_turns=None):
         seen_contexts.append((profile.name, context))
         return fake_session(next(handoffs))
 
