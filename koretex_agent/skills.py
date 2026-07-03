@@ -9,6 +9,7 @@ no retrain."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .client import Client
@@ -83,6 +84,26 @@ def catalog_index(catalog: Path = SKILLS_DIR) -> list[dict]:
                     "win_rate": (wins / total) if total else None})
     out.sort(key=lambda s: (s["win_rate"] is not None, s["win_rate"] or 0), reverse=True)
     return out
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2}
+
+
+def select_skills(task_text: str, catalog: Path = SKILLS_DIR, k: int = 3) -> list[str]:
+    """Pick up to k skills relevant to a task: keyword overlap between the task
+    and each skill's name+description, tie-broken by win-rate. Only skills with
+    real overlap are returned — no irrelevant skills injected."""
+    task_words = _words(task_text)
+    if not task_words:
+        return []
+    scored = []
+    for s in catalog_index(catalog):
+        overlap = len(task_words & _words(s["name"] + " " + s["description"]))
+        if overlap:
+            scored.append((overlap, s["win_rate"] or 0.0, s["name"]))
+    scored.sort(reverse=True)
+    return [name for _, _, name in scored[:k]]
 
 
 # ── synthesis ────────────────────────────────────────────────────────────

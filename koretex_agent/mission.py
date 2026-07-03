@@ -54,13 +54,27 @@ class MissionState(BaseModel):
     terminal_review: dict | None = None
     tokens: dict[str, int] = {"prompt": 0, "completion": 0}
     notes: list[str] = []  # reliability events (e.g. inconclusive validator lanes)
+    skills_used: list[str] = []  # catalog skills injected into workers this mission
+    skills_scored: bool = False  # ledger updated on resolution (guards resume)
 
 
 class Mission:
     def __init__(self, brief: str, workdir: str, client: Client | None = None,
-                 skills_dir: str | None = None):
+                 skills_dir: str | None = None, *, use_skills: bool = True,
+                 synthesize_on_pass: bool = True):
         self.client = client or Client()
-        self.skills_dir = skills_dir
+        self.use_skills = use_skills
+        self.synthesize_on_pass = synthesize_on_pass
+        # The skills catalog doubles as the use_skill source. When skills are on
+        # and no explicit dir is given, default to the shared catalog so workers
+        # can load previously-learned skills.
+        if use_skills:
+            from .skills import SKILLS_DIR
+            self.catalog = Path(skills_dir) if skills_dir else SKILLS_DIR
+            self.skills_dir = str(self.catalog)
+        else:
+            self.catalog = None
+            self.skills_dir = skills_dir
         self.dir = Path(workdir).resolve() / ".mission"
         self.dir.mkdir(parents=True, exist_ok=True)
         existing = self.dir / "state.json"
@@ -145,13 +159,15 @@ class Mission:
 
     # ── one profile session inside this mission's workdir ────────────────
     def _run(self, profile: Profile, task: str, assertions: list[Assertion],
-             context: str, handoff_model, max_turns: int | None = None):
+             context: str, handoff_model, max_turns: int | None = None,
+             skills: list[str] | None = None):
         order = WorkOrder(
             order_id=f"{self.state.mission_id}-{uuid.uuid4().hex[:6]}",
             task=task,
             workdir=self.state.workdir,
             assertions=assertions,
             context=context,
+            skills=skills or [],
         )
         toolbox = Toolbox(self.state.workdir, skills_dir=self.skills_dir,
                           allowed=list(profile.tools))
@@ -196,6 +212,35 @@ class Mission:
                     )
         return (len(regressions) == 0, regressions)
 
+    # ── skills: select for a worker, score + synthesize on resolution ────
+    def _select_skills(self, task_desc: str) -> list[str]:
+        if not self.use_skills:
+            return []
+        from .skills import select_skills
+        return select_skills(task_desc, self.catalog)
+
+    def _finalize_skills(self) -> None:
+        """Once the mission resolves: score the ledger for every skill it loaded
+        (a cleared mission is a win, a failed one a loss) and — on a pass —
+        distil a fresh skill. Guarded so a resumed run doesn't double-count."""
+        if not self.use_skills or self.state.skills_scored:
+            return
+        won = self.state.status == "done"
+        if self.state.skills_used:
+            from .skills import record_outcome
+            record_outcome(list(dict.fromkeys(self.state.skills_used)), won=won,
+                           catalog=self.catalog)
+        if won and self.synthesize_on_pass:
+            try:  # best-effort — never let synthesis fail the mission
+                from .skills import synthesize_from_mission
+                _, path = synthesize_from_mission(self.state.workdir, client=self.client,
+                                                  catalog=self.catalog)
+                self.state.notes.append(f"skill synthesized: {path.parent.name}")
+            except Exception as e:
+                self.state.notes.append(f"skill synthesis skipped: {e}")
+        self.state.skills_scored = True
+        self._save()
+
     # ── main loop ─────────────────────────────────────────────────────────
     def run(self) -> MissionState:
         if self.state.status == "planning":
@@ -213,8 +258,12 @@ class Mission:
                         "failures (evidence below) — do not start over:\n\n"
                         + "\n\n".join(task.regressions[-4:])
                     )
+                sel = self._select_skills(task.description)
                 work = self._run(WORKER, task.description, task.assertions,
-                                 context, WorkHandoff)
+                                 context, WorkHandoff, skills=sel)
+                for s in sel:
+                    if s not in self.state.skills_used:
+                        self.state.skills_used.append(s)
                 wh = WorkHandoff.model_validate(work.handoff)
                 if wh.request_attention:
                     task.regressions.append(f"worker requested attention: {wh.report[:500]}")
@@ -236,6 +285,7 @@ class Mission:
             if task.status == "failed":
                 self.state.status = "failed"
                 self._save()
+                self._finalize_skills()
                 return self.state
 
         # ── terminal review: fresh eyes, the whole workdir vs the brief ───
@@ -261,4 +311,5 @@ class Mission:
         else:
             self.state.status = "done" if review.overall_passed else "failed"
         self._save()
+        self._finalize_skills()
         return self.state

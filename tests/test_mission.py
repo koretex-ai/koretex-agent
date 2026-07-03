@@ -34,7 +34,7 @@ def _handoffs(*sequence):
     """Yield successive handoffs for _run calls in order."""
     it = iter(sequence)
 
-    def side_effect(profile, task, assertions, context, handoff_model, max_turns=None):
+    def side_effect(profile, task, assertions, context, handoff_model, max_turns=None, skills=None):
         return fake_session(next(it))
 
     return side_effect
@@ -53,7 +53,9 @@ DONE_W = {"order_id": "o", "done": True, "report": "did it"}
 
 def make_mission(tmp_path):
     with patch.object(mission_mod, "Client"):
-        m = Mission("brief", str(tmp_path))
+        # skills off: these tests exercise the coordinator, not the skill loop
+        # (which has its own tests and would touch the real catalog / a model)
+        m = Mission("brief", str(tmp_path), use_skills=False, synthesize_on_pass=False)
         plan_response(m.client)
         return m
 
@@ -76,7 +78,7 @@ def test_failed_validation_retries_with_regression_context(tmp_path):
                      DONE_W, PASS_V, PASS_V,   # attempt 2: both lanes pass
                      PASS_V])                  # terminal review
 
-    def run_spy(profile, task, assertions, context, handoff_model, max_turns=None):
+    def run_spy(profile, task, assertions, context, handoff_model, max_turns=None, skills=None):
         seen_contexts.append((profile.name, context))
         return fake_session(next(handoffs))
 
