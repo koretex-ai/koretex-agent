@@ -65,13 +65,23 @@ Implemented:
 - **−81% for that worker session.** Prompt tokens dominate the saving (81,579 → 15,132) because they compound with turn count.
 - Caveats: N=1, and the baseline was the worst-case maxed-out session (most sessions already stopped fine), so the mission-wide drop will be smaller than 81% — but that first worker was ~30% of the whole mission's tokens, so the dent is large.
 
-**Still open:** re-run the full 35B mission to get the clean mission-level number (step 1 taught us single-call numbers don't always predict the mission total — worth confirming). Consider the same "batch your checks" nudge for the validator if it keeps maxing out. A structural backstop (inject a "turns running low, wrap up" reminder near `max_turns`) is a cheap complement if prompt-only proves unreliable across tasks.
+**Full-mission confirm (run `m1`, 2026-07-03) — the prompt fix is NOT the main lever, and the root cause is elsewhere.** m1 came in at **415K tokens (worse than the 288K baseline)**; 2 of 4 workers still maxed at 20 turns. But investigating those two workers reframed everything: they were NOT doing ceremonial re-verification — they were honestly stuck fighting a **broken orchestrator-emitted assertion** (VAL-006: `grep -q 'usage'` is case-sensitive and fails on the "Usage" heading; plus confusing `'\-\-pretty'` escaping). The deliverable was correct; the contract was wrong. Conclusions:
+- The 1b prompt fix (kept — it helps genuine ceremonial cases, T2 shows 8 turns) does not address these blowups.
+- **Do NOT add a structural turn-cap backstop** as the primary fix — it would truncate a worker legitimately struggling and mask the bad contract behind a clean cap.
+- The real lever is **step 2 (plan-lint)** below — kill fragile assertions at the source. And give the worker an escape hatch (see step 2, added rule).
+- Mission-level numbers swing wildly (284K↔415K) on stuck-worker spirals + stochastic retries; consistency repeats (m2/m3…) belong AFTER step 2 lands.
 
-### 2. Deterministic plan-lint (carried from Phase 1)
-The orchestrator sometimes emits weak/broken contracts (14B: `pytest || true`, bare `test -f`; 35B: a self-contradictory grep, and it put the command in `statement` and left `command` null). Add a code-level lint between `plan()` and execution that rejects:
+### 2. Deterministic plan-lint (carried from Phase 1) — ← NOW THE TOP PRIORITY (m1 evidence)
+The orchestrator sometimes emits weak/broken contracts (14B: `pytest || true`, bare `test -f`; 35B: a self-contradictory grep, and it put the command in `statement` and left `command` null). **New hard evidence from mission run `m1` (2026-07-03):** the orchestrator emitted VAL-006 as `[ -f README.md ] && grep -q 'usage' README.md && grep -q '\-\-pretty' README.md`. That single fragile assertion cost ~26 wasted worker turns across two sessions (both maxed at 20) and helped push the mission to 415K tokens — the deliverable was correct the whole time. **This is the highest-leverage fix, not worker/thinking tuning.**
+
+Add a code-level lint between `plan()` and execution that rejects:
 - vacuous assertions (`|| true`, bare existence checks with no behavioral check),
 - assertions with neither a `command` nor an executable-looking `statement`,
-and bounces the plan back to the orchestrator with the objection (one retry). Also tighten the orchestrator prompt so `command` gets populated (statement = prose, command = the check).
+- **case-sensitive prose greps on documentation** — `grep -q '<lowercase word>'` against README/docs is brittle (headings capitalize); require `grep -qi` or ban gating on doc *wording* entirely,
+- **needless/confusing escaping** like `'\-\-pretty'` (should be `grep -- '--pretty'` or `grep -F`),
+and bounces the plan back to the orchestrator with the objection (one retry). Also tighten the orchestrator prompt so `command` gets populated (statement = prose, command = the check) and so documentation assertions check for *existence of the file + a section*, not exact prose casing.
+
+**Also add a worker escape hatch (small, complementary):** worker.md step 4 already says to `request_attention=true` when the order "conflicts with reality," but in m1 the workers didn't recognize a *buggy assertion* as such — they treated it as their own bug and thrashed. Add explicit guidance: if the artifact is honestly produced and correct but an assertion still fails in a way that looks like the assertion itself is wrong (e.g. a case-sensitive grep vs a valid heading), stop and `request_attention` with the evidence rather than fighting it to `max_turns`.
 
 ### 3. Concierge → mission wiring (tier 0 drives the ladder)
 Build the routing entrypoint: a `concierge` profile/loop (Qwen3-4B) that takes a user message, emits the `Route` schema (concierge/task/mission — already prototyped and 5/5 correct), and dispatches: chat locally, or spin a single worker (tier 1), or a full mission (tier 2). This is the first piece of the actual product UX. Escalation triggers between tiers are in the README design.

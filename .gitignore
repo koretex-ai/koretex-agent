@@ -5,3 +5,5 @@ phase0/.venv/
 phase0/zenith-src/
 phase0/*-workspace/
 phase0/kernel-worker-test/
+phase0/bench/
+*.log
