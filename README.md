@@ -8,7 +8,7 @@
 
 ## The idea in one paragraph
 
-Koretex Agent is a terminal AI assistant that pays for itself. Install it and your machine gains two faces: an **agent** you work with (it writes code, runs commands, remembers you, learns skills), and a **provider node** that serves open-weight models to the Koretex network whenever your machine is idle. The agent's inference is drawn from that same network and billed against the credits your idle hours earn (self-spend works on the network today; users who consume more than they contribute simply buy credits). The agent compensates for using modest open models with a disciplined orchestration harness — bounded workers, independent verification, lazy escalation — that lets a **~15B model do most of the work**, and it turns its own verified work into training data so that model keeps getting better.
+Koretex Agent is a terminal AI assistant that pays for itself. Install it and your machine gains two faces: an **agent** you work with (it writes code, runs commands, remembers you, learns skills), and a **provider node** that serves open-weight models to the Koretex network whenever your machine is idle. The agent's inference is drawn from that same network and billed against the credits your idle hours earn (self-spend works on the network today; users who consume more than they contribute simply buy credits). The agent compensates for using modest open models with a disciplined orchestration harness — bounded workers, independent verification, lazy escalation — that lets a **compact MoE (35B-A3B, ~3B active) do most of the work at small-model cost**, and it turns its own verified work into training data so that model keeps getting better.
 
 ## Implementation status
 
@@ -61,9 +61,11 @@ There is one runtime — the **kernel**: a single OpenAI-compatible client point
 | Profile | Model tier | Prefix budget (prompt + schemas) | Reasoning | Job |
 |---|---|---|---|---|
 | Concierge | 1–4B, on-device, always resident | ≤ 1.5K tokens | — | converse, remember, route |
-| Worker | 15B | ≤ 3K + task payload | off | execute one bounded task |
-| Validator · Scrutiny | 15B | ≤ 2.5K + contract | off | two independent lanes verify one task |
-| Orchestrator | largest available (escalated early on; distilled down over time) | ≤ 5K | **on** | plan and replan missions |
+| Worker | **35B-A3B** (standard tier) | ≤ 3K + task payload | off | execute one bounded task |
+| Validator · Scrutiny | **35B-A3B** (standard tier) | ≤ 2.5K + contract | off | two independent lanes verify one task |
+| Orchestrator | **35B-A3B** (standard tier) | ≤ 5K | **on** | plan and replan missions |
+
+The standard tier is the **Qwen3.6-35B-A3B** — a mixture-of-experts model with **~3B active parameters**, so it runs at small-model compute/latency (a 3B forward pass) while reasoning with a 35B model's knowledge. That combination is why it, not a dense ~15B, is the workhorse: empirically a dense 14B is both too slow as a thinking-on orchestrator (multi-minute plans) and too weak as a worker (it produced syntactically-broken parsers and couldn't converge), whereas the 35B-A3B plans in seconds and clears the same work — at comparable cost. The ladder is therefore **concierge (1–4B) → 35B-A3B standard tier → Larger (70B+/BYO-key) escalation**; there is no separate dense-15B rung.
 
 The "verify" role ships as **two profiles / two independent lanes** — `validator` runs the live surface (executes the contract commands) and `scrutiny` reads the source for frauds — and a task clears only when both pass. The reasoning column is the Phase 1 tuning: thinking helps only the planner ([details below](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles)).
 
@@ -81,20 +83,20 @@ Every request enters at the cheapest tier and climbs only on explicit, code-enfo
 flowchart TD
   user["User request"] --> con["Concierge (1–4B, on-device)<br/>chat · memory · routing"]
   con -->|"simple: answered locally"| user
-  con -->|"work order (schema)"| t1["Tier 1 — Task<br/>one bounded 15B worker"]
+  con -->|"work order (schema)"| t1["Tier 1 — Task<br/>one bounded 35B-A3B worker"]
   t1 -->|"failure or failed quick-check"| t2["Tier 2 — Mission<br/>task DAG · dual validators · gates<br/>(coordinator is deterministic code)"]
-  t2 -->|"N validation failures / M replans /<br/>task marked non-decomposable"| t3["Tier 3 — Escalation<br/>70B+ network models, bounded step only"]
+  t2 -->|"N validation failures / M replans /<br/>task marked non-decomposable"| t3["Tier 3 — Escalation<br/>Larger (70B+/BYO-key), bounded step only"]
   t3 -->|"result returns to the mission"| t2
-  net["Koretex network — serves 15B & premium models, bills credits"] --- t1
+  net["Koretex network — serves the 35B-A3B & premium models, bills credits"] --- t1
   net --- t2
   net --- t3
 ```
 
 Design notes:
 
-- **Tier 3 receives a step, never a mission.** ✅ *Built* (`Mission._attempt_escalation`). When tier 2 can't clear a step — attempts exhausted, or a worker still blocked after a bounded replan — that one step is handed to a stronger model under the *same* contract, in the *same* local workdir. Crucially, **verification stays at tier 2**: the escalated work still has to pass the independent two-lane gate, so escalation improves the attempt without bypassing the check. A per-mission **escalation budget** (default 2) + an explicit counter keep tier-3 rare. It's env-gated (`KORETEX_AGENT_ESCALATION_MODEL`/`_BASE_URL`/`_API_KEY`); unset → tier-3 is simply off and missions behave exactly as before. Every tier-3 output becomes curriculum for the 15B. *Demonstrated on a live model: a stuck step escalated to a real qwen3:14b that produced the deliverable, real validators cleared it, ledger split mission 16.8K / escalation 4.3K tokens (`scripts/probe-escalation.py`).*
+- **Tier 3 receives a step, never a mission.** ✅ *Built* (`Mission._attempt_escalation`). When tier 2 can't clear a step — attempts exhausted, or a worker still blocked after a bounded replan — that one step is handed to a stronger model under the *same* contract, in the *same* local workdir. Crucially, **verification stays at tier 2**: the escalated work still has to pass the independent two-lane gate, so escalation improves the attempt without bypassing the check. A per-mission **escalation budget** (default 2) + an explicit counter keep tier-3 rare. It's env-gated (`KORETEX_AGENT_ESCALATION_MODEL`/`_BASE_URL`/`_API_KEY`); unset → tier-3 is simply off and missions behave exactly as before. Every tier-3 output becomes curriculum for the 35B-A3B standard tier. *Demonstrated on a live model: a stuck step escalated to a real stronger worker that produced the deliverable, real validators cleared it, ledger split mission 16.8K / escalation 4.3K tokens (`scripts/probe-escalation.py`). Note: a Larger network model above the 35B-A3B is not yet available — until a BYO-key premium endpoint is wired, tier-3's genuine capability-gap demo on complex tasks is a standing TODO (see [NEXT-STEPS](docs/NEXT-STEPS.md)).*
 - **The concierge is biased hard toward escalating.** v0 ships with it doing only memory + routing (plus trivialities); its self-answer whitelist widens only as routing data accumulates. On desktop, v0 can even ship without tier 0 — it's additive.
-- **Target KPI: ≥ 90% of tokens spent at tier ≤ 2.** ✅ *Built* (`tiers.py`, `TierLedger`). Every model call is charged to the tier that made it; `escalation_rate` = fraction of tokens above tier 2, and `within_kpi()` checks it against the 0.90 floor. Reported per mission and merged across the whole concierge ladder (tier 0 routing + tier 1 worker + tier 2/3 mission). It's the same yardstick for cost *and* learning: each brain release should push the escalation rate down; if it won't move, that's the signal to grow the standard model (~24B) rather than lean on escalation.
+- **Target KPI: ≥ 90% of tokens spent at tier ≤ 2.** ✅ *Built* (`tiers.py`, `TierLedger`). Every model call is charged to the tier that made it; `escalation_rate` = fraction of tokens above tier 2, and `within_kpi()` checks it against the 0.90 floor. Reported per mission and merged across the whole concierge ladder (tier 0 routing + tier 1 worker + tier 2/3 mission). It's the same yardstick for cost *and* learning: each brain release should push the escalation rate down; if it won't move, that's the signal to grow the standard model rather than lean on escalation. *Demonstrated healthy-case, live: a full 2-task mission on the 35B-A3B standard tier cleared both tasks on attempt 1 with **100% of 192K tokens at tier ≤2** (escalation_rate 0, KPI passes) — and the deliverable was a correct hand-written parser passing the exact right-associative-`**` and unary-precedence cases a dense 14B produced broken code for (`scripts/live-escalation-mission.py`).*
 - Contracts, handoffs, and verdicts crossing every tier boundary are strict JSON schemas, **enforced by grammar-constrained decoding at the serving layer** — we own the servers, so malformed output is not a failure mode. Frontier-API agents can't do this; we can.
 
 ### The mission tier (Zenith's coordinator, vendored)
@@ -222,10 +224,10 @@ flowchart LR
 | Tier | Target | Notes |
 |---|---|---|
 | Nano (concierge) | 1–4B (Qwen3-1.7B/4B class), runs on phones | post-trained for routing + memory ops; the mobile story |
-| Standard (the brain) | **~15B dense — post-training base: Qwen3-14B** (Apache 2.0) | Q4 ≈ 9–11 GB: fits an RTX 3090 with headroom *and* 16–24 GB Apple Silicon — the model we train is the model the median node can serve. Dense = the simplest post-training target |
-| Premium (escalation) | 30B–70B+ (e.g. Qwen3-Coder-30B-A3B today) served by bigger providers | until premium supply exists on the network, tier 3 needs a BYO-key fallback — purity here would kill adoption |
+| Standard (the brain) | **Qwen3.6-35B-A3B** — MoE, ~3B active | Q4 ≈ 20 GB: fits an RTX 3090 / 24 GB+ Apple Silicon; **~3B-active compute** means small-model latency with 35B knowledge. Chosen over a dense ~15B after the 14B proved too slow as a thinking-on orchestrator and too weak as a worker (§ [profiles](#one-kernel-four-profiles)). The MoE is a slightly harder post-training target than a dense model — a tradeoff we take for the capability/latency it buys |
+| Premium (escalation) | Larger — 70B+ / frontier, served by bigger providers or **BYO-key** | no network model above the 35B-A3B exists yet, so tier 3 is BYO-key until premium supply lands — purity here would kill adoption |
 
-Off-the-shelf interim: Qwen3-Coder-30B-A3B as the network's best serving model today; Devstral Small (24B) as the external benchmark yardstick. The landscape moves fast — the commitment is the strategy (dense ~15B trained by loop 3, quarterly re-evaluation), not any single checkpoint.
+The landscape moves fast — the commitment is the strategy (a compact MoE standard tier trained by loop 3, quarterly re-evaluation), not any single checkpoint. **Open decision:** loop 3's post-training target shifts from the retired dense-14B plan to the 35B-A3B standard tier (a MoE post-train); the datasets already harvested are model-agnostic (contract/trajectory/verdict triples), so the flywheel is unaffected — only the base checkpoint changes.
 
 ## Design principles
 
