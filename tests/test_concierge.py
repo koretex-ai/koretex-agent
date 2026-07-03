@@ -32,7 +32,7 @@ def test_decide_parses_route(monkeypatch):
 
 def test_chat_route_answers_locally(monkeypatch):
     monkeypatch.setattr(cg, "decide", lambda m, c: Route(decision="chat", reply="4", reason="trivial"))
-    res = cg.handle("what is 2+2?", workdir="/tmp", client=object())
+    res = cg.handle("what is 2+2?", workdir="/tmp", client=object(), log_routing=False)
     assert res.route == "chat" and res.reply == "4"
     assert res.handoff is None and res.mission is None
 
@@ -41,7 +41,7 @@ def test_task_route_runs_one_worker(monkeypatch):
     monkeypatch.setattr(cg, "decide", lambda m, c: Route(decision="task", work="make hello.py", reason="one file"))
     monkeypatch.setattr(cg, "_run_worker",
                         lambda work, workdir, client, skills_dir=None: WorkHandoff(order_id="o", done=True, report="done"))
-    res = cg.handle("make hello.py", workdir="/tmp", client=object())
+    res = cg.handle("make hello.py", workdir="/tmp", client=object(), log_routing=False)
     assert res.route == "task" and res.handoff["done"] is True and res.mission is None
 
 
@@ -50,7 +50,7 @@ def test_task_escalates_to_mission_when_worker_falls_short(monkeypatch, tmp_path
     monkeypatch.setattr(cg, "_run_worker",
                         lambda work, workdir, client, skills_dir=None: WorkHandoff(order_id="o", done=False, report="stuck", request_attention=True))
     monkeypatch.setattr("koretex_agent.mission.Mission", _FakeMission)
-    res = cg.handle("hard thing", workdir=str(tmp_path), client=object())
+    res = cg.handle("hard thing", workdir=str(tmp_path), client=object(), log_routing=False)
     assert res.route == "task->mission"
     assert res.handoff["done"] is False           # the tier-1 attempt is preserved
     assert res.mission == {"status": "done", "brief_seen": True}
@@ -60,7 +60,7 @@ def test_task_escalates_to_mission_when_worker_falls_short(monkeypatch, tmp_path
 def test_mission_route_runs_full_mission(monkeypatch, tmp_path):
     monkeypatch.setattr(cg, "decide", lambda m, c: Route(decision="mission", work="build a tool", reason="multi-step"))
     monkeypatch.setattr("koretex_agent.mission.Mission", _FakeMission)
-    res = cg.handle("build a tool", workdir=str(tmp_path), client=object())
+    res = cg.handle("build a tool", workdir=str(tmp_path), client=object(), log_routing=False)
     assert res.route == "mission" and res.mission["status"] == "done"
     assert res.handoff is None
 
@@ -69,7 +69,7 @@ def test_blank_work_falls_back_to_message(monkeypatch, tmp_path):
     # small models pick the route but sometimes leave `work` empty
     monkeypatch.setattr(cg, "decide", lambda m, c: Route(decision="mission", work="", reason="multi-step"))
     monkeypatch.setattr("koretex_agent.mission.Mission", _FakeMission)
-    res = cg.handle("build a csv2json tool with tests", workdir=str(tmp_path), client=object())
+    res = cg.handle("build a csv2json tool with tests", workdir=str(tmp_path), client=object(), log_routing=False)
     assert res.work == "build a csv2json tool with tests"       # fell back to the message
     assert _FakeMission.last_args[0] == "build a csv2json tool with tests"
 

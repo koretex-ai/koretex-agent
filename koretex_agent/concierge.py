@@ -9,7 +9,10 @@ the routing call runs on the small local model (`client`); the actual work runs
 wherever `work_client` points (the Koretex network in deployment)."""
 from __future__ import annotations
 
+import json
+import time
 import uuid
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -18,6 +21,8 @@ from .profiles import CONCIERGE, WORKER
 from .schemas import Route, WorkHandoff, WorkOrder
 from .session import _effort, constrained_call, run_session
 from .tools import Toolbox
+
+ROUTING_STORE = Path.home() / ".koretex-agent" / "routing"
 
 
 class ConciergeResult(BaseModel):
@@ -50,33 +55,52 @@ def _run_worker(work: str, workdir: str, client: Client, skills_dir=None) -> Wor
     return WorkHandoff.model_validate(res.handoff)
 
 
+def _log_route(message: str, decision: str, work: str, result: ConciergeResult,
+               store: Path = ROUTING_STORE) -> None:
+    """Record the routing decision + its downstream outcome. This is loop-3 data:
+    the outcome grades whether the chosen tier was right (an escalation means the
+    route was too low). Local-only, like trajectories; scrubbed at export time."""
+    store.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "message": message, "decision": decision, "route": result.route,
+        "reason": result.reason, "work": work,
+        "worker_done": (result.handoff or {}).get("done"),
+        "mission_status": (result.mission or {}).get("status"),
+    }
+    (store / f"{result.route.replace('->', '_')}-{uuid.uuid4().hex[:8]}.jsonl").write_text(
+        json.dumps(entry) + "\n")
+
+
 def handle(message: str, *, workdir: str, client: Client,
-           work_client: Client | None = None, skills_dir=None) -> ConciergeResult:
+           work_client: Client | None = None, skills_dir=None,
+           log_routing: bool = True) -> ConciergeResult:
     """Route a user message and dispatch it. `client` runs the concierge (small,
     local); `work_client` runs tier-1/2 work (defaults to `client`)."""
     work_client = work_client or client
     r = decide(message, client)
-
-    if r.decision == "chat":
-        return ConciergeResult(route="chat", reason=r.reason, reply=r.reply)
-
     # Small models reliably pick the route but sometimes leave `work` blank; the
     # raw message is always a safe work order, so fall back to it.
     work = r.work.strip() or message
 
-    if r.decision == "task":
+    if r.decision == "chat":
+        result = ConciergeResult(route="chat", reason=r.reason, reply=r.reply)
+    elif r.decision == "task":
         wh = _run_worker(work, workdir, work_client, skills_dir)
         if wh.done and not wh.request_attention:
-            return ConciergeResult(route="task", reason=r.reason, work=work,
-                                   handoff=wh.model_dump())
-        # tier-1 fell short → escalate to a full mission (tier 2)
+            result = ConciergeResult(route="task", reason=r.reason, work=work,
+                                     handoff=wh.model_dump())
+        else:  # tier-1 fell short → escalate to a full mission (tier 2)
+            from .mission import Mission
+            state = Mission(work, workdir, client=work_client, skills_dir=skills_dir).run()
+            result = ConciergeResult(route="task->mission", reason=r.reason, work=work,
+                                     handoff=wh.model_dump(), mission=state.model_dump())
+    else:  # mission
         from .mission import Mission
         state = Mission(work, workdir, client=work_client, skills_dir=skills_dir).run()
-        return ConciergeResult(route="task->mission", reason=r.reason, work=work,
-                               handoff=wh.model_dump(), mission=state.model_dump())
+        result = ConciergeResult(route="mission", reason=r.reason, work=work,
+                                 mission=state.model_dump())
 
-    # mission
-    from .mission import Mission
-    state = Mission(work, workdir, client=work_client, skills_dir=skills_dir).run()
-    return ConciergeResult(route="mission", reason=r.reason, work=work,
-                           mission=state.model_dump())
+    if log_routing:
+        _log_route(message, r.decision, work, result)
+    return result

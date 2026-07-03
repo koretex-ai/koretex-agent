@@ -77,11 +77,11 @@ def _traj(path, order_id, task, content):
 
 
 def test_prepare_scrubs_examples(tmp_path):
-    _traj(tmp_path / "a.jsonl", "m-1-aaaaaa", "task", "work in /Users/moreshkokane/proj")
+    _traj(tmp_path / "a.jsonl", "m-1-aaaaaa", "task", "work in /Users/alice/proj")
     bundle = prepare(store=tmp_path)
-    assert bundle["sft"], "expected one passing worker example"
-    blob = json.dumps(bundle["sft"])
-    assert "moreshkokane" not in blob and "/Users/<user>" in blob
+    assert bundle["datasets"]["worker_sft"], "expected one passing worker example"
+    blob = json.dumps(bundle["datasets"]["worker_sft"])
+    assert "alice" not in blob and "/Users/<user>" in blob
     assert bundle["scrub_counts"].get("home_macos", 0) >= 1
 
 
@@ -91,5 +91,5 @@ def test_write_bundle_manifest_records_consent_and_scrub(tmp_path):
     consent = set_consent(contribute=True, scope="own", path=tmp_path / "consent.json")
     manifest = write_bundle(tmp_path / "out", bundle, consent)
     assert manifest["consent"]["scope"] == "own"
-    assert manifest["stats"]["sft_examples"] == 1
+    assert manifest["stats"]["counts"]["worker_sft"] == 1
     assert (tmp_path / "out" / "worker_sft.jsonl").exists()

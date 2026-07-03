@@ -64,8 +64,56 @@ def test_build_dpo_pairs_pass_and_fail_same_task(tmp_path):
 
 def test_harvest_stats_and_write(tmp_path):
     _traj(tmp_path / "a.jsonl", "worker", "m-5-aaaaaa", "t", _worker_verdict(True))
-    out = harvest(store=tmp_path)
-    assert out["stats"]["worker_pass"] == 1 and out["stats"]["sft_examples"] == 1
+    out = harvest(store=tmp_path, routing_store=tmp_path / "no_routing")
+    assert out["stats"]["worker_pass"] == 1 and out["stats"]["counts"]["worker_sft"] == 1
     paths = tr.write_datasets(tmp_path / "ds", out)
     assert (tmp_path / "ds" / "worker_sft.jsonl").exists()
-    assert json.loads((tmp_path / "ds" / "stats.json").read_text())["sft_examples"] == 1
+    assert json.loads((tmp_path / "ds" / "stats.json").read_text())["counts"]["worker_sft"] == 1
+
+
+def _val_traj(path, profile, order_id, task, overall_passed, clean=True):
+    """A validator/scrutiny trajectory; `clean` = terminated without a tool call."""
+    lines = [
+        {"event": "start", "profile": profile, "contract": {"order_id": order_id, "task": task}},
+        {"event": "message", "msg": {"role": "system", "content": "judge"}},
+        {"event": "message", "msg": {"role": "user", "content": f"validate {task}"}},
+    ]
+    last = {"role": "assistant", "content": "verdict"}
+    if not clean:
+        last["tool_calls"] = [{"id": "1", "function": {"name": "run_shell", "arguments": "{}"}}]
+    lines.append({"event": "message", "msg": last})
+    lines.append({"event": "verdict", "verdict": {"order_id": order_id, "items": [], "overall_passed": overall_passed}})
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+
+def test_validator_sft_keeps_correct_final_verdicts(tmp_path):
+    # task cleared → a lane that passed it (cleanly) is a correct positive
+    _val_traj(tmp_path / "v.jsonl", "validator", "m-9-aaaaaa", "task Z", overall_passed=True)
+    _val_traj(tmp_path / "s.jsonl", "scrutiny", "m-9-bbbbbb", "task Z", overall_passed=False)  # wrong
+    sessions = tr.load_sessions(tmp_path)
+    sft, dissent = tr.build_validator_sft(sessions, {("m-9", "task Z"): True})
+    profiles = {e["profile"] for e in sft}
+    assert profiles == {"validator"}          # only the correct lane kept
+    assert dissent == 1                        # the lanes disagreed → one was wrong
+
+
+def test_validator_sft_drops_cut_off_verdicts(tmp_path):
+    # correct verdict but the session hit the turn cap (ended on a tool call) → drop
+    _val_traj(tmp_path / "v.jsonl", "validator", "m-9-aaaaaa", "task Z", overall_passed=True, clean=False)
+    sessions = tr.load_sessions(tmp_path)
+    sft, _ = tr.build_validator_sft(sessions, {("m-9", "task Z"): True})
+    assert sft == []
+
+
+def test_routing_sft_and_escalation_dpo():
+    entries = [
+        {"message": "add a flag", "route": "task", "worker_done": True, "work": "add a flag"},
+        {"message": "build a whole app", "route": "task->mission", "mission_status": "done", "work": "build a whole app"},
+        {"message": "what is 2+2", "route": "chat"},  # unverifiable → no training example
+    ]
+    sft, dpo = tr.build_routing(entries)
+    decided = {e["message"]: json.loads(e["messages"][-1]["content"])["decision"] for e in sft}
+    assert decided == {"add a flag": "task", "build a whole app": "mission"}  # escalation corrected to mission
+    assert len(dpo) == 1
+    assert json.loads(dpo[0]["chosen"][0]["content"])["decision"] == "mission"
+    assert json.loads(dpo[0]["rejected"][0]["content"])["decision"] == "task"

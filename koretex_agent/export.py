@@ -19,12 +19,12 @@ from .training import DEFAULT_STORE, harvest
 
 def prepare(store: Path | str = DEFAULT_STORE,
             mission_workdirs: list | None = None) -> dict:
-    """Harvest, then scrub every example. Returns the scrubbed bundle + a
-    redaction tally."""
+    """Harvest, then scrub every example in every dataset. Returns the scrubbed
+    bundle + a redaction tally."""
     bundle = harvest(store=store, mission_workdirs=mission_workdirs)
     scrubber = Scrubber(secrets_from_env())
-    for split in ("sft", "dpo"):
-        bundle[split] = [scrubber.obj(ex) for ex in bundle[split]]
+    bundle["datasets"] = {name: [scrubber.obj(ex) for ex in examples]
+                          for name, examples in bundle["datasets"].items()}
     bundle["scrub_counts"] = dict(scrubber.counts)
     return bundle
 
@@ -32,15 +32,17 @@ def prepare(store: Path | str = DEFAULT_STORE,
 def write_bundle(out_dir: Path | str, bundle: dict, consent: Consent) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("sft", "dpo"):
-        (out_dir / f"worker_{name}.jsonl").write_text(
-            "".join(json.dumps(ex) + "\n" for ex in bundle[name]))
+    files = []
+    for name, examples in bundle["datasets"].items():
+        fn = f"{name}.jsonl"
+        (out_dir / fn).write_text("".join(json.dumps(ex) + "\n" for ex in examples))
+        files.append(fn)
     manifest = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "consent": consent.model_dump(),
         "stats": bundle["stats"],
         "scrub_counts": bundle["scrub_counts"],
-        "files": ["worker_sft.jsonl", "worker_dpo.jsonl"],
+        "files": files,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
