@@ -64,6 +64,31 @@ def strip_thinking(msg: dict) -> dict:
     return {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")}
 
 
+# Keep the most recent N tool results in full on the wire; elide older ones.
+# Re-sending every prior file dump and command output on every turn is the
+# dominant prompt-token cost — it compounds ~O(turns^2). The model acts on
+# recent state, and the assistant tool_call it made is preserved either way, so
+# it still sees *what* it ran; only the stale *output* is dropped. The full
+# history is still recorded to the trajectory — this trims only what goes on the
+# wire, never the record.
+TOOL_ELIDE_KEEP = 3
+
+
+def _elide_old_tool_results(messages: list[dict], keep_last: int = TOOL_ELIDE_KEEP) -> list[dict]:
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_idxs) <= keep_last:
+        return messages
+    stale = set(tool_idxs[:-keep_last])
+    out = []
+    for i, m in enumerate(messages):
+        if i in stale:
+            n = len(m.get("content") or "")
+            out.append({**m, "content": f"[earlier tool output elided — {n} chars]"})
+        else:
+            out.append(m)
+    return out
+
+
 # Reasoning-mode policy → OpenAI `reasoning_effort`. Thinking on: leave it
 # unset (model's default). Off: "none" — honored by the dispatcher's llama.cpp
 # and local Ollama alike, and applied to *every* call in the session (agentic
@@ -98,7 +123,7 @@ def run_session(
     stopped_cleanly = False
     for turns in range(1, max_turns + 1):
         res: ChatResult = client.chat(
-            messages, tools=toolbox.schemas(), reasoning_effort=effort
+            _elide_old_tool_results(messages), tools=toolbox.schemas(), reasoning_effort=effort
         )
         ptok += res.usage.get("prompt_tokens", 0)
         ctok += res.usage.get("completion_tokens", 0)
@@ -136,7 +161,7 @@ def run_session(
     )
     usage_sink: list[dict] = []
     handoff, _ = constrained_call(
-        client, messages, handoff_model, usage_sink, reasoning_effort=effort
+        client, _elide_old_tool_results(messages), handoff_model, usage_sink, reasoning_effort=effort
     )
     for u in usage_sink:
         ptok += u.get("prompt_tokens", 0)
