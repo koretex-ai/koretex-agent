@@ -129,7 +129,12 @@ def run_session(
 
 
 def _render_order(order: WorkOrder) -> str:
-    parts = [f"WORK ORDER {order.order_id}", f"Task: {order.task}"]
+    parts = [
+        f"WORK ORDER {order.order_id}",
+        "Your tools already run inside the work directory — use paths relative to it "
+        "(e.g. `cli.py`, `tests/`, `.`). Do not invent absolute paths like /workdir.",
+        f"Task: {order.task}",
+    ]
     if order.assertions:
         parts.append("Contract assertions:")
         for a in order.assertions:

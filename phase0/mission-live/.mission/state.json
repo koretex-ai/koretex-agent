@@ -2,11 +2,107 @@
  "mission_id": "m-5939999b",
  "brief": "Build a Python CLI tool csv2json: cli.py reads a CSV file path argument and prints a JSON array of row objects to stdout; a --pretty flag produces indented output; quoted fields containing commas and missing values must be handled correctly; include a pytest test suite under tests/ (verify with python3 -m pytest if available, else run cli.py directly on sample files); include a README.md with usage examples. Use only the Python standard library.",
  "workdir": "/Users/moreshkokane/code/koretex-agent/phase0/mission-live",
- "status": "planning",
- "tasks": [],
+ "status": "running",
+ "tasks": [
+  {
+   "task_id": "T01",
+   "description": "Implement the core functionality of the CSV to JSON converter in cli.py, including handling quoted fields with commas, missing values, and --pretty flag.",
+   "assertions": [
+    {
+     "item_id": "VAL-001",
+     "statement": "Check that cli.py exists",
+     "command": "test -f cli.py"
+    },
+    {
+     "item_id": "VAL-002",
+     "statement": "Check that cli.py outputs valid JSON for a simple CSV",
+     "command": "python3 cli.py tests/data/simple.csv | python3 -c 'import json; json.loads(input())'"
+    },
+    {
+     "item_id": "VAL-003",
+     "statement": "Check that cli.py handles quoted fields with commas correctly",
+     "command": "python3 cli.py tests/data/quoted.csv | grep -q '\"quoted,field\"'"
+    },
+    {
+     "item_id": "VAL-004",
+     "statement": "Check that cli.py handles missing values in CSV",
+     "command": "python3 cli.py tests/data/missing.csv | grep -q '\"\"'"
+    },
+    {
+     "item_id": "VAL-005",
+     "statement": "Check that --pretty produces indented JSON",
+     "command": "python3 cli.py tests/data/simple.csv --pretty | grep -q '^  \"'"
+    }
+   ],
+   "status": "pending",
+   "attempts": 1,
+   "revised": false,
+   "regressions": []
+  },
+  {
+   "task_id": "T02",
+   "description": "Create a pytest test suite in tests/ directory to validate all functionality",
+   "assertions": [
+    {
+     "item_id": "VAL-006",
+     "statement": "Check that tests directory exists",
+     "command": "test -d tests"
+    },
+    {
+     "item_id": "VAL-007",
+     "statement": "Check that tests/test_cli.py exists",
+     "command": "test -f tests/test_cli.py"
+    },
+    {
+     "item_id": "VAL-008",
+     "statement": "Check that tests cover edge cases",
+     "command": "grep -q 'test_quoted_fields' tests/test_cli.py && grep -q 'test_missing_values' tests/test_cli.py"
+    },
+    {
+     "item_id": "VAL-009",
+     "statement": "Check that pytest test suite runs without errors",
+     "command": "python3 -m pytest tests || (python3 -c 'import pytest; pytest.main([\"tests\"])')"
+    }
+   ],
+   "status": "pending",
+   "attempts": 0,
+   "revised": false,
+   "regressions": []
+  },
+  {
+   "task_id": "T03",
+   "description": "Create README.md with usage examples and instructions",
+   "assertions": [
+    {
+     "item_id": "VAL-010",
+     "statement": "Check that README.md exists",
+     "command": "test -f README.md"
+    },
+    {
+     "item_id": "VAL-011",
+     "statement": "Check that README contains basic usage example",
+     "command": "grep -q 'Usage: python3 cli.py input.csv' README.md"
+    },
+    {
+     "item_id": "VAL-012",
+     "statement": "Check that README mentions --pretty flag",
+     "command": "grep -q '--pretty' README.md"
+    },
+    {
+     "item_id": "VAL-013",
+     "statement": "Check that README includes test instructions",
+     "command": "grep -q 'pytest' README.md"
+    }
+   ],
+   "status": "pending",
+   "attempts": 0,
+   "revised": false,
+   "regressions": []
+  }
+ ],
  "terminal_review": null,
  "tokens": {
-  "prompt": 0,
-  "completion": 0
+  "prompt": 15726,
+  "completion": 10760
  }
 }

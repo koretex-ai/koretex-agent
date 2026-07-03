@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "/Users/moreshkokane/code/koretex-agent/phase0/.venv/bin/koretex-agent", line 6, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/moreshkokane/code/koretex-agent/koretex_agent/cli.py", line 56, in main
+    state = m.run()
+  File "/Users/moreshkokane/code/koretex-agent/koretex_agent/mission.py", line 179, in run
+    work = self._run(WORKER, task.description, task.assertions,
+                     context, WorkHandoff)
+  File "/Users/moreshkokane/code/koretex-agent/koretex_agent/mission.py", line 133, in _run
+    res = run_session(profile.name, profile.system_prompt(), order, toolbox,
+                      handoff_model, client=self.client, max_turns=profile.max_turns)
+  File "/Users/moreshkokane/code/koretex-agent/koretex_agent/session.py", line 81, in run_session
+    res: ChatResult = client.chat(messages, tools=toolbox.schemas())
+                      ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/moreshkokane/code/koretex-agent/koretex_agent/client.py", line 69, in chat
+    raise RuntimeError(f"chat failed after {self.cfg.max_retries} attempts: {last_err}")
+RuntimeError: chat failed after 3 attempts: timed out
