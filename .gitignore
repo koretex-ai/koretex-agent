@@ -8,3 +8,4 @@ phase0/kernel-worker-test/
 phase0/bench/
 *.log
 phase0/datasets/
+phase0/export/
