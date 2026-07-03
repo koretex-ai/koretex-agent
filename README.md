@@ -179,7 +179,8 @@ The Hermes learning loop, upgraded with ground truth Hermes never had:
 
 - After a gate-passed mission, a **skill-synthesizer** profile distills the passing workers' actions (pulled from the trajectory store by mission id) into a skill — [agentskills.io](https://agentskills.io) `SKILL.md`, one shared library, loadable via the existing `use_skill` tool. Skill *synthesis* is a judgment task (thinking on); it escalates to the premium tier initially and distills down later. *Demonstrated: a real csv2json mission distilled into a reusable `csv-to-json-cli` skill — generalized steps + pitfalls, not a transcript.*
 - Skills carry a **win/loss ledger**: a skill loaded into a mission that clears scores a win, one that fails a loss; `catalog_index` ranks by win-rate, and the relevance-filtered catalog (name + one line) is what a planner sees — bodies load just-in-time. Skill quality is measured, not vibes.
-- *Designed, not yet built:* a background curator (merge/retire), session search as a concierge tool, and on-device memory files.
+- **The loop is auto-wired into missions:** each mission selects relevant catalog skills for its workers (by description overlap, win-rate-ranked), scores the ledger on its outcome, and distils a fresh skill on a pass — no manual step. *Demonstrated: the skill learned from one csv2json mission is auto-selected for the next.*
+- *Designed, not yet built:* a background curator (merge/retire), embedding-based relevance, session search as a concierge tool, and on-device memory files.
 
 ### Loop 3 — the weights (months / releases) — ✅ harvest + export built (`koretex_agent/training.py`, `export.py`)
 
