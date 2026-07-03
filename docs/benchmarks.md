@@ -129,3 +129,28 @@ The deliverable was correct throughout (README has usage + --pretty; review pass
 
 **Recommended next lever (validator reliability):** (a) treat a validator that hit `max_turns` without a clean stop as *inconclusive* rather than authoritative — re-run or raise its cap; (b) make validators batch per-assertion checks to stop maxing out; (c) consider running the terminal review at a higher turn budget since it judges the whole workdir. This is the analogue of step 1b/2, one tier over.
 
+### After step 2b (validator reliability: batching + don't-trust-cutoff) — 2026-07-03
+| test | metric | value | notes |
+|------|--------|-------|-------|
+| T3 `m4` | total tokens | **178,903** | prompt 157,747 + completion 21,156 — lowest of all runs |
+| T3 `m4` | terminal review | **PASS** | both tasks att1 |
+| T3 `m4` | validator turns | [9, 2, 8] + terminal 8/12 | **0 validators maxed** (vs 1–3 before) — the batching prompt worked |
+| T3 `m4` | maxed-out sessions | **0 / 7** | first run with nothing maxed at all |
+| T3 `m4` | `state.notes` | `[]` | no inconclusive events |
+
+**Finding from m4 — honest scope.** Best run yet: 179K tokens, clean pass, **zero maxed-out sessions**. The **batching half of 2b clearly works** — validators came in at 9/2/8 turns (were maxing at 12). BUT two caveats keep this from being a full validation of 2b:
+1. **The safety net didn't fire.** Because no validator maxed out, `_judge`'s re-run and the inconclusive-handling path (the actual fix for m2's *spurious failure*) were never exercised live — `notes` is empty. That path is covered by unit tests, not yet by a real mission.
+2. **Not apples-to-apples on tokens.** The planner emitted **2 tasks** this run (vs 3 in m1–m3), so fewer validator sessions — part of the low total is task count, not just 2b.
+
+To truly exercise the safety net in the wild we'd need a run where a validator still maxes (stochastic), or a forced-low-cap probe. Net: 2b's prevention (batching) is demonstrated; 2b's cure (don't trust a cut-off validator) is unit-tested but not yet field-triggered.
+
+### Running verdict (baseline → 2b)
+| run | tokens | review | maxed sessions |
+|-----|--------|--------|----------------|
+| baseline | 287,618 | PASS | 1 worker |
+| m1 (1b, pre-lint) | 415,050 | PASS | 4 (2 worker, 2 val) |
+| m2 (step2) | 382,840 | **FAIL (spurious)** | 3 val |
+| m3 (step2) | 219,948 | PASS | 1 val |
+| m4 (step2b) | 178,903 | PASS | **0** |
+Trend since the fixes landed: monotonically fewer maxed sessions and lower tokens, no repeat of the m1/m2 failure modes. Three clean passes in a row (m3, m4 — and m1 passed too); the one failure (m2) is the exact case 2b now guards against.
+
