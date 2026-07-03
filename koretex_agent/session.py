@@ -64,26 +64,47 @@ def strip_thinking(msg: dict) -> dict:
     return {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")}
 
 
-# Keep the most recent N tool results in full on the wire; elide older ones.
-# Re-sending every prior file dump and command output on every turn is the
-# dominant prompt-token cost — it compounds ~O(turns^2). The model acts on
-# recent state, and the assistant tool_call it made is preserved either way, so
-# it still sees *what* it ran; only the stale *output* is dropped. The full
-# history is still recorded to the trajectory — this trims only what goes on the
-# wire, never the record.
+# Keep the most recent N *turns* in full on the wire; elide the bulky content of
+# older ones. Re-sending the whole transcript every turn is the dominant
+# prompt-token cost and it compounds ~O(turns^2). Two things dominate that bulk
+# and both are elided once stale:
+#   - tool *results* (file dumps, command output) — the validator/reader cost;
+#   - assistant tool_call *arguments* (chiefly write_file's full content, re-sent
+#     on every later turn) — the worker/writer cost, measured at ~67% of a
+#     thrashing worker's wire.
+# The model acts on recent state; for stale turns it still sees *that* it read or
+# wrote something (role + function name preserved), just not the bytes. The full
+# history is always recorded to the trajectory — this trims only the wire.
 TOOL_ELIDE_KEEP = 3
+_ELIDE_MIN = 200  # leave small results/args alone — not worth the churn
 
 
-def _elide_old_tool_results(messages: list[dict], keep_last: int = TOOL_ELIDE_KEEP) -> list[dict]:
-    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    if len(tool_idxs) <= keep_last:
+def _elide_stale_context(messages: list[dict], keep_last: int = TOOL_ELIDE_KEEP) -> list[dict]:
+    # A turn is marked by an assistant message that called tools; keep the last
+    # `keep_last` such turns (and everything after) in full, elide older bulk.
+    turns = [i for i, m in enumerate(messages)
+             if m.get("role") == "assistant" and m.get("tool_calls")]
+    if len(turns) <= keep_last:
         return messages
-    stale = set(tool_idxs[:-keep_last])
+    cutoff = turns[-keep_last]
     out = []
     for i, m in enumerate(messages):
-        if i in stale:
-            n = len(m.get("content") or "")
-            out.append({**m, "content": f"[earlier tool output elided — {n} chars]"})
+        if i >= cutoff:
+            out.append(m)
+        elif m.get("role") == "tool" and len(m.get("content") or "") > _ELIDE_MIN:
+            out.append({**m, "content": f"[earlier tool output elided — {len(m['content'])} chars]"})
+        elif m.get("role") == "assistant" and m.get("tool_calls"):
+            tcs, changed = [], False
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {})
+                args = fn.get("arguments") or ""
+                if len(args) > _ELIDE_MIN:
+                    tcs.append({**tc, "function": {**fn,
+                                "arguments": json.dumps({"_elided": f"{len(args)} chars"})}})
+                    changed = True
+                else:
+                    tcs.append(tc)
+            out.append({**m, "tool_calls": tcs} if changed else m)
         else:
             out.append(m)
     return out
@@ -123,7 +144,7 @@ def run_session(
     stopped_cleanly = False
     for turns in range(1, max_turns + 1):
         res: ChatResult = client.chat(
-            _elide_old_tool_results(messages), tools=toolbox.schemas(), reasoning_effort=effort
+            _elide_stale_context(messages), tools=toolbox.schemas(), reasoning_effort=effort
         )
         ptok += res.usage.get("prompt_tokens", 0)
         ctok += res.usage.get("completion_tokens", 0)
@@ -161,7 +182,7 @@ def run_session(
     )
     usage_sink: list[dict] = []
     handoff, _ = constrained_call(
-        client, _elide_old_tool_results(messages), handoff_model, usage_sink, reasoning_effort=effort
+        client, _elide_stale_context(messages), handoff_model, usage_sink, reasoning_effort=effort
     )
     for u in usage_sink:
         ptok += u.get("prompt_tokens", 0)
