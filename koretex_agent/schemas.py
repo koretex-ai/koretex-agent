@@ -2,6 +2,8 @@
 enforced at the serving layer via response_format json_schema."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,18 @@ class Assertion(BaseModel):
     item_id: str = Field(pattern=r"^VAL-\d{3}$")
     statement: str
     command: str | None = None  # exact command a validator must run, when applicable
+
+
+class Route(BaseModel):
+    """Tier-0 concierge decision — where a user message enters the ladder:
+    - chat: trivial enough to answer here on the small local model (fill `reply`);
+    - task: one bounded worker can finish it (tier 1) — `work` is the instruction;
+    - mission: needs multiple steps / independent verification (tier 2) — `work` is the brief.
+    """
+    decision: Literal["chat", "task", "mission"]
+    reply: str = ""   # chat only: the direct answer
+    work: str = ""    # task/mission only: the cleanly restated instruction or brief
+    reason: str = ""  # one line — for logs and routing training labels
 
 
 class WorkOrder(BaseModel):

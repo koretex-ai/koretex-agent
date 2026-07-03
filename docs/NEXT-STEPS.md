@@ -104,8 +104,12 @@ The m2/m3 consistency repeats proved the worker-side fixes hold (0 worker maxout
 
 Both halves of 2b are now demonstrated. 2b is complete.
 
-### 3. Concierge → mission wiring (tier 0 drives the ladder)
-Build the routing entrypoint: a `concierge` profile/loop (Qwen3-4B) that takes a user message, emits the `Route` schema (concierge/task/mission — already prototyped and 5/5 correct), and dispatches: chat locally, or spin a single worker (tier 1), or a full mission (tier 2). This is the first piece of the actual product UX. Escalation triggers between tiers are in the README design.
+### 3. Concierge → mission wiring (tier 0 drives the ladder) — ✅ DONE (2026-07-03)
+**Implemented:** `Route` schema (chat/task/mission) in schemas.py; `CONCIERGE` profile (tools=(), thinking off, 1.5K budget — 267 used) + `profiles/concierge.md`; `koretex_agent/concierge.py` with `decide()` (one constrained routing call on the small model) and `handle()` (dispatch: chat answered locally · task → one tier-1 worker · mission → full coordinator · **tier-1 shortfall auto-escalates to a mission**). `client` runs the concierge (small/local), `work_client` runs the work (network). CLI: `koretex-agent concierge --task "<message>"`. A deterministic fallback uses the raw message when the model leaves `work` blank (observed on small models).
+
+**Validated:** routing 5/5 on local qwen3:4b (chat/memory → chat, quick edits → task, multi-step builds → mission). Full dispatch end-to-end: "what is 2+2?" → answered locally on the 4B (no network); "create hello.py" → routed to a 14B worker that produced the file, done=true. Tests: `tests/test_concierge.py` (routing parse, all dispatch paths, tier-1→tier-2 escalation, blank-work fallback, budget); suite now 36 passing.
+
+**Still open (Phase 2 territory):** richer escalation triggers (tier-1 quick-check before accepting; mission step → tier-3 network escalation), conversation/memory context for the concierge (currently single-turn), and a separate local concierge model wired in deployment (the `work_client` seam exists).
 
 ### 4. The learning loops (start the data flywheel)
 - **Skill synthesis**: after a gate-passed mission, a `skill-synthesizer` profile distills the trajectory into an agentskills.io Markdown skill; add a skills catalog + win/loss ledger (skills already loadable via the `use_skill` tool).

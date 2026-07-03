@@ -34,8 +34,9 @@ def parse_assert(spec: str) -> Assertion:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="koretex-agent")
-    ap.add_argument("profile", choices=[*HANDOFFS, "mission"])
-    ap.add_argument("--task", required=True)
+    ap.add_argument("profile", choices=[*HANDOFFS, "mission", "concierge"])
+    ap.add_argument("--task", required=True,
+                    help="the work order (or, for `concierge`, the user message)")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--assert", dest="asserts", action="append", default=[])
     ap.add_argument("--skills-dir")
@@ -55,6 +56,17 @@ def main() -> None:
         m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir)
         state = m.run()
         print(state.model_dump_json(indent=2))
+        return
+
+    if args.profile == "concierge":
+        # --task carries the user message. In deployment the concierge model is a
+        # small local one; here the same client serves routing and work unless a
+        # separate concierge model is configured.
+        from .concierge import handle
+
+        result = handle(args.task, workdir=args.workdir, client=Client(cfg),
+                        skills_dir=args.skills_dir)
+        print(result.model_dump_json(indent=2))
         return
 
     profile = ALL[args.profile]

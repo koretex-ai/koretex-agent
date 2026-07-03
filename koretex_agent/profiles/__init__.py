@@ -59,4 +59,16 @@ ORCHESTRATOR = Profile(
     thinking=True,
 )
 
-ALL = {p.name: p for p in (WORKER, VALIDATOR, SCRUTINY, ORCHESTRATOR)}
+# Tier 0: the always-on, on-device front door. A tiny local model (Qwen3-1.7B/4B
+# class) that answers the cheapest requests itself and routes everything heavier
+# down the ladder. Routing is one constrained call — no tools, no thinking, speed
+# is the point. Smallest budget of all, since it is always resident.
+CONCIERGE = Profile(
+    name="concierge",
+    tools=(),
+    prefix_budget_tokens=1_500,
+    max_turns=1,
+    thinking=False,
+)
+
+ALL = {p.name: p for p in (CONCIERGE, WORKER, VALIDATOR, SCRUTINY, ORCHESTRATOR)}
