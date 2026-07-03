@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
+
+RETIRED_DIR = "_retired"
 
 from .client import Client
 from .profiles import SKILL_SYNTHESIZER
@@ -70,7 +73,9 @@ def catalog_index(catalog: Path = SKILLS_DIR) -> list[dict]:
     first. This is what a planner/worker sees (bodies load just-in-time)."""
     ledger = load_ledger(catalog)
     out = []
-    for skill_dir in sorted(p for p in catalog.glob("*") if (p / "SKILL.md").exists()):
+    for skill_dir in sorted(p for p in catalog.glob("*")
+                            if p.is_dir() and not p.name.startswith(("_", "."))
+                            and (p / "SKILL.md").exists()):
         name = skill_dir.name
         desc = ""
         for line in (skill_dir / "SKILL.md").read_text().splitlines():
@@ -166,3 +171,77 @@ def synthesize_from_mission(workdir: str | Path, client: Client | None = None,
     skill = synthesize_skill(state["brief"], _render_actions(workers), client)
     path = save_skill(skill, catalog)
     return skill, path
+
+
+# ── curation (the background gardener) ───────────────────────────────────
+def _similar(a: dict, b: dict) -> float:
+    """Jaccard overlap of two skills' name+description word sets."""
+    wa = _words(a["name"] + " " + a["description"])
+    wb = _words(b["name"] + " " + b["description"])
+    return len(wa & wb) / len(wa | wb) if (wa and wb) else 0.0
+
+
+def _fold(ledger: dict, src: str, dst: str) -> None:
+    s = ledger.get(src, {})
+    d = ledger.setdefault(dst, {"uses": 0, "wins": 0, "losses": 0, "description": ""})
+    for k in ("uses", "wins", "losses"):
+        d[k] = d.get(k, 0) + s.get(k, 0)
+
+
+def _retire_skill(catalog: Path, ledger: dict, name: str, reason: str) -> None:
+    src = catalog / name
+    if src.exists():
+        dest = catalog / RETIRED_DIR / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(src), str(dest))
+    e = ledger.setdefault(name, {"uses": 0, "wins": 0, "losses": 0, "description": ""})
+    e["retired"] = True
+    e["retired_reason"] = reason
+
+
+def curate(catalog: Path = SKILLS_DIR, *, min_uses: int = 3,
+           retire_below: float = 1 / 3, dup_threshold: float = 0.6) -> dict:
+    """Garden the catalog from the ledger: merge near-duplicate skills (keep the
+    one with the better record, fold the loser's stats in) and retire proven
+    losers (enough uses, win-rate below the floor). Retired skills move to
+    <catalog>/_retired/ — out of selection but auditable. Returns a report.
+
+    Deterministic; run it on a schedule (see scripts/curate-skills.py)."""
+    ledger = load_ledger(catalog)
+    active = catalog_index(catalog)
+    report = {"merged": [], "retired": [], "kept": []}
+    handled: set[str] = set()
+
+    # 1. merge near-duplicates
+    for i, base in enumerate(active):
+        if base["name"] in handled:
+            continue
+        group = [base] + [o for o in active[i + 1:]
+                          if o["name"] not in handled and _similar(base, o) >= dup_threshold]
+        handled.update(s["name"] for s in group)
+        if len(group) > 1:
+            survivor = max(group, key=lambda s: (s["win_rate"] or 0.0, s["wins"], -s["losses"]))
+            for s in group:
+                if s["name"] != survivor["name"]:
+                    _fold(ledger, s["name"], survivor["name"])
+                    _retire_skill(catalog, ledger, s["name"], f"merged into {survivor['name']}")
+                    report["merged"].append({"from": s["name"], "into": survivor["name"]})
+
+    # 2. retire losers (using folded stats)
+    for s in active:
+        name = s["name"]
+        if ledger.get(name, {}).get("retired"):
+            continue
+        e = ledger.get(name, {})
+        wins, losses = e.get("wins", 0), e.get("losses", 0)
+        total = wins + losses
+        if total >= min_uses and (wins / total) < retire_below:
+            _retire_skill(catalog, ledger, name, f"win-rate {wins}/{total} below {retire_below:.0%}")
+            report["retired"].append({"name": name, "record": f"{wins}W/{losses}L"})
+        else:
+            report["kept"].append(name)
+
+    _save_ledger(ledger, catalog)
+    return report
