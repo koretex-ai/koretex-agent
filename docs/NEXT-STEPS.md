@@ -71,7 +71,10 @@ Implemented:
 - The real lever is **step 2 (plan-lint)** below — kill fragile assertions at the source. And give the worker an escape hatch (see step 2, added rule).
 - Mission-level numbers swing wildly (284K↔415K) on stuck-worker spirals + stochastic retries; consistency repeats (m2/m3…) belong AFTER step 2 lands.
 
-### 2. Deterministic plan-lint (carried from Phase 1) — ← NOW THE TOP PRIORITY (m1 evidence)
+### 2. Deterministic plan-lint (carried from Phase 1) — ✅ DONE (2026-07-03)
+**Implemented:** `koretex_agent/plan_lint.py` (`lint_plan`/`lint_assertion`), wired into `mission.plan()` as a one-shot repair bounce (orchestrator gets the objections and re-emits; validators stay the real gate, so a still-dirty plan proceeds rather than hard-failing). Rules: self-passing commands (`|| true`/`|| :`), existence-only checks (`test -f` with no behavior), case-sensitive doc greps (require `grep -qi`), `\-\-` escaping, missing `command`, and checks misfiled in `statement`. Orchestrator prompt tightened to avoid all of these at the source; worker.md gained the escape-hatch (request_attention on a broken assertion instead of thrashing). Verified: lint flags m1's real VAL-006 (both defects) and leaves the 5 good assertions clean; 23 tests pass; budgets fine (orchestrator 306/5000, worker 633/3000). **Still open:** run the consistency repeats (m2/m3…) now that this has landed — that's where we confirm the mission-level token numbers stabilize.
+
+<details><summary>original notes</summary>
 The orchestrator sometimes emits weak/broken contracts (14B: `pytest || true`, bare `test -f`; 35B: a self-contradictory grep, and it put the command in `statement` and left `command` null). **New hard evidence from mission run `m1` (2026-07-03):** the orchestrator emitted VAL-006 as `[ -f README.md ] && grep -q 'usage' README.md && grep -q '\-\-pretty' README.md`. That single fragile assertion cost ~26 wasted worker turns across two sessions (both maxed at 20) and helped push the mission to 415K tokens — the deliverable was correct the whole time. **This is the highest-leverage fix, not worker/thinking tuning.**
 
 Add a code-level lint between `plan()` and execution that rejects:
@@ -82,6 +85,7 @@ Add a code-level lint between `plan()` and execution that rejects:
 and bounces the plan back to the orchestrator with the objection (one retry). Also tighten the orchestrator prompt so `command` gets populated (statement = prose, command = the check) and so documentation assertions check for *existence of the file + a section*, not exact prose casing.
 
 **Also add a worker escape hatch (small, complementary):** worker.md step 4 already says to `request_attention=true` when the order "conflicts with reality," but in m1 the workers didn't recognize a *buggy assertion* as such — they treated it as their own bug and thrashed. Add explicit guidance: if the artifact is honestly produced and correct but an assertion still fails in a way that looks like the assertion itself is wrong (e.g. a case-sensitive grep vs a valid heading), stop and `request_attention` with the evidence rather than fighting it to `max_turns`.
+</details>
 
 ### 3. Concierge → mission wiring (tier 0 drives the ladder)
 Build the routing entrypoint: a `concierge` profile/loop (Qwen3-4B) that takes a user message, emits the `Route` schema (concierge/task/mission — already prototyped and 5/5 correct), and dispatches: chat locally, or spin a single worker (tier 1), or a full mission (tier 2). This is the first piece of the actual product UX. Escalation triggers between tiers are in the README design.

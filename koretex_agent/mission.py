@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .client import Client
+from .plan_lint import lint_plan
 from .profiles import ORCHESTRATOR, SCRUTINY, VALIDATOR, WORKER, Profile
 from .schemas import (
     Assertion,
@@ -80,7 +81,26 @@ class Mission:
             {"role": "user", "content": f"Brief:\n{self.state.brief}\n\nEmit the Plan as JSON."},
         ]
         usage_sink: list[dict] = []
-        plan, _ = constrained_call(self.client, msgs, Plan, usage_sink)
+        plan, res = constrained_call(self.client, msgs, Plan, usage_sink)
+
+        # Deterministic plan-lint: reject fragile/vacuous assertions in code
+        # before a worker burns turns on them. One repair pass — the validators
+        # are the real gate, so a still-dirty plan proceeds rather than blocking.
+        objections = lint_plan(plan)
+        if objections:
+            msgs += [
+                res.message,
+                {
+                    "role": "user",
+                    "content": (
+                        "The plan has assertion defects that would make workers fail or "
+                        "thrash. Fix every one and re-emit the whole Plan as JSON:\n- "
+                        + "\n- ".join(objections)
+                    ),
+                },
+            ]
+            plan, _ = constrained_call(self.client, msgs, Plan, usage_sink)
+
         for u in usage_sink:
             self.state.tokens["prompt"] += u.get("prompt_tokens", 0)
             self.state.tokens["completion"] += u.get("completion_tokens", 0)
