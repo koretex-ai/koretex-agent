@@ -7,3 +7,4 @@ phase0/*-workspace/
 phase0/kernel-worker-test/
 phase0/bench/
 *.log
+phase0/datasets/

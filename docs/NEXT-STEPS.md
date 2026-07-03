@@ -111,9 +111,10 @@ Both halves of 2b are now demonstrated. 2b is complete.
 
 **Still open (Phase 2 territory):** richer escalation triggers (tier-1 quick-check before accepting; mission step → tier-3 network escalation), conversation/memory context for the concierge (currently single-turn), and a separate local concierge model wired in deployment (the `work_client` seam exists).
 
-### 4. The learning loops (start the data flywheel)
-- **Skill synthesis**: after a gate-passed mission, a `skill-synthesizer` profile distills the trajectory into an agentskills.io Markdown skill; add a skills catalog + win/loss ledger (skills already loadable via the `use_skill` tool).
-- **Trajectory harvest**: the `(contract, trajectory, verdict)` triples are already being written. Build the filter → per-role SFT/DPO dataset pipeline in `training/` (Hermes's batch_runner/trajectory_compressor are reference implementations). This is the path to post-training the 15B brain.
+### 4. The learning loops (start the data flywheel) — 🟡 trajectory harvest DONE (2026-07-03), skill synthesis open
+- **Trajectory harvest — ✅ DONE.** `koretex_agent/training.py` realizes loop 3: parses the on-disk `(contract, trajectory, verdict)` triples into `SessionRecord`s, labels worker sessions (self-reported handoff, or authoritative gate outcome when `mission_workdirs` are supplied — labels are joined via `(mission_id, task)` from `state.json`), and builds **worker SFT** (passing trajectories) + **worker DPO** (failed vs passed attempt at the same task). `scripts/harvest-trajectories.py` runs it and writes datasets. Real run over our 103 logged sessions: 47 workers (42 pass / 5 fail, gate-linked across 7 missions) → **42 SFT examples**; 0 DPO pairs (our missions passed att1, so no task has both a pass and a fail to pair — the builder is proven by unit test). Tests: `tests/test_training.py`; suite 41 passing. Datasets are gitignored (reproducible via the script).
+  - *Next refinements:* validator/scrutiny datasets (label by dissent — when the two lanes disagree, one is wrong) and routing datasets for the concierge (label by downstream outcome); then the actual SFT/DPO training run on a GPU box to produce brain v1.
+- **Skill synthesis — open.** After a gate-passed mission, a `skill-synthesizer` profile distills the trajectory into an agentskills.io Markdown skill; add a skills catalog + win/loss ledger (skills already loadable via the `use_skill` tool). This is loop 2 (days–weeks), the faster loop that improves behavior without a retrain.
 
 ### 5. Model strategy follow-through
 - Decide the standard-tier model for the network: Qwen3-14B (small-node local) vs. running everything through the 35B-Q4 network tier. Likely both, per the ladder.
