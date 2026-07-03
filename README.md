@@ -2,13 +2,34 @@
 
 *A lightweight, self-funding, self-improving AI agent — every install is also a provider node on the [Koretex](https://dispatcher.koretex.ai) distributed inference network.*
 
-> **Status: Phase 1 (the kernel) built and tuned; the Phase 1 exit mission now passes end-to-end on the network.** This document is the founding design record — architecture, reasoning, and roadmap. The core design below is intact; the new [Phase 1 as built](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles) section records the refinements that emerged while making real 15–35B models behave. Empirical grounding: [docs/phase0-findings.md](docs/phase0-findings.md), [docs/phase1-findings.md](docs/phase1-findings.md), and the run-by-run [docs/benchmarks.md](docs/benchmarks.md).
+> **Status: the kernel, the tier-0 concierge, and both learning loops are built and validated on real missions over the Koretex network.** This document is the founding design record — architecture, reasoning, and roadmap. The design below is the target; the [Implementation status](#implementation-status) table is the current reality, and [Phase 1 as built](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles) records the tuning that made real 15–35B models behave. Empirical grounding: [docs/phase0-findings.md](docs/phase0-findings.md), [docs/phase1-findings.md](docs/phase1-findings.md), the run-by-run [docs/benchmarks.md](docs/benchmarks.md), and the [docs/seeker-gtm.md](docs/seeker-gtm.md) distribution brief.
 
 ---
 
 ## The idea in one paragraph
 
 Koretex Agent is a terminal AI assistant that pays for itself. Install it and your machine gains two faces: an **agent** you work with (it writes code, runs commands, remembers you, learns skills), and a **provider node** that serves open-weight models to the Koretex network whenever your machine is idle. The agent's inference is drawn from that same network and billed against the credits your idle hours earn (self-spend works on the network today; users who consume more than they contribute simply buy credits). The agent compensates for using modest open models with a disciplined orchestration harness — bounded workers, independent verification, lazy escalation — that lets a **~15B model do most of the work**, and it turns its own verified work into training data so that model keeps getting better.
+
+## Implementation status
+
+*Updated as built (2026-07). The rest of this document is the design target; this table is the current reality. The build has run ahead on the learning loops and the tier-0 concierge, and left the ladder's upper rungs and the installer for later — driven by what each stage's data demanded next (see [docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)).*
+
+| Component | Status | Notes |
+|---|---|---|
+| **Kernel** — client · tools · session loop · schemas · trajectory recorder | ✅ built | one OpenAI-compatible client; ~10 sandboxed tools; bounded, turn-capped sessions |
+| **Profiles** + CI prefix-budget gate | ✅ built | worker · validator · scrutiny · orchestrator · concierge · skill-synthesizer, each under budget |
+| **Mission tier** — plan → lint → work → dual-validate → review | ✅ built | deterministic coordinator; passes the exit mission *repeatedly* on 35B-A3B (Q4) over the network |
+| **Tuning** — per-profile reasoning · stop-when-done · plan-lint · cut-off-validator handling | ✅ built | [Phase 1 as built](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles); consistency shown across repeated runs |
+| **Ladder tier 0** — concierge routing (chat / task / mission) + auto-escalation | ✅ built | on-device router; tier-1 shortfall escalates to a mission |
+| **Ladder tier 3** — 70B+ network / BYO-key escalation, triggers & counters | ⬜ designed | Phase 2 |
+| **Loop 3** — trajectory harvest → per-role SFT/DPO datasets | ✅ built | worker + validator + routing; gate-linked labels |
+| **Consent-gated, scrubbed export** (S3) | ✅ built | opt-in gate + secret/PII scrub *before* anything leaves the machine |
+| **Loop 2** — skill synthesis + win/loss ledger | ✅ built | distils a passing mission into a ranked, reusable `SKILL.md` |
+| **GPU post-training run → brain v1** | ⬜ separate repo | datasets are produced here; training runs elsewhere |
+| **One install, two faces** — installer + idle-policy daemon | ⬜ designed | Phase 3 |
+| **Nano concierge on-device / mobile** (Solana Seeker) | ⬜ designed | [docs/seeker-gtm.md](docs/seeker-gtm.md) — phone = consumer client, not a serving node |
+
+The kernel is one small Python package (`koretex_agent/`) with a green test suite including the build-failing prefix-budget gate. What is *not* yet built: the ladder's tier-3 escalation and its counters, the unified installer + idle daemon, the on-device nano concierge, and the actual weight-training run (a separate repo).
 
 ## Why this exists
 
@@ -153,15 +174,14 @@ Three loops at three timescales, each feeding the next slower one.
 ### Loop 1 — within a mission (minutes–hours)
 Regression ledger: every validator catch is recorded with setup, command, expected and observed output; later workers read it and stop repeating the mistake. Plans are revised in place when assumptions break. (Zenith's mechanism, kept.)
 
-### Loop 2 — skills, across sessions (days–weeks)
+### Loop 2 — skills, across sessions (days–weeks) — ✅ built (`koretex_agent/skills.py`)
 The Hermes learning loop, upgraded with ground truth Hermes never had:
 
-- After a gate-passed mission (or repeated tier-1 successes of the same shape), a **skill-synthesizer** profile distills the trajectory into a skill — [agentskills.io](https://agentskills.io) Markdown, one shared library for all profiles. Skill *synthesis* is a judgment task: it escalates to tier 3 initially (one premium call per successful mission) and distills down later.
-- Every trajectory records which skills were loaded; gates then label whether they helped. **Skills accumulate win/loss stats.** A background curator (Hermes's idea, kept) improves winners, merges duplicates, retires losers. Skill quality is measured, not vibes.
-- Session search (Hermes's idea, kept) runs as a concierge *tool* over the trajectory store — zero prefix cost, full recall of past work.
-- Memory (who you are, preferences, ongoing projects) lives on-device with the concierge — the privacy-friendly place — as curated files.
+- After a gate-passed mission, a **skill-synthesizer** profile distills the passing workers' actions (pulled from the trajectory store by mission id) into a skill — [agentskills.io](https://agentskills.io) `SKILL.md`, one shared library, loadable via the existing `use_skill` tool. Skill *synthesis* is a judgment task (thinking on); it escalates to the premium tier initially and distills down later. *Demonstrated: a real csv2json mission distilled into a reusable `csv-to-json-cli` skill — generalized steps + pitfalls, not a transcript.*
+- Skills carry a **win/loss ledger**: a skill loaded into a mission that clears scores a win, one that fails a loss; `catalog_index` ranks by win-rate, and the relevance-filtered catalog (name + one line) is what a planner sees — bodies load just-in-time. Skill quality is measured, not vibes.
+- *Designed, not yet built:* a background curator (merge/retire), session search as a concierge tool, and on-device memory files.
 
-### Loop 3 — the weights (months / releases)
+### Loop 3 — the weights (months / releases) — ✅ harvest + export built (`koretex_agent/training.py`, `export.py`)
 
 Data capture is **structural, not bolted on**: the kernel records every session as a `(contract, full trajectory, verdict)` triple — messages, tool calls, results, skills used, model tier, mission linkage. Because tiers only communicate through schemas, labels come for free:
 
@@ -172,9 +192,9 @@ flowchart LR
   train --> run
 ```
 
-- Rejection-sample gate-passed trajectories → SFT; pair failed/passed attempts at the same task → DPO; tier-3 escalation outputs → the 15B's curriculum for exactly the steps it currently can't do.
-- Each brain release is benchmarked on escalation rate and a fixed mission suite. The loops compound: better brain → more honest validators → cleaner labels → better brain.
-- **Privacy:** default-on for our own machines; user machines contribute only via an explicit opt-in that is designed in from day one, not retrofitted.
+- **Built:** `harvest()` turns the on-disk triples into per-role datasets — worker SFT (gate-passed trajectories) + DPO (failed vs passed at the same task), validator SFT (a lane's final verdict labeled by the gate; cut-off verdicts dropped; dissent counted), and routing SFT/DPO (the concierge's route graded by downstream outcome — an escalation is a `chosen=mission / rejected=task` pair). Real harvest so far: 54 worker + 30 validator SFT examples.
+- **Privacy is enforced in code, not just promised.** Export refuses to run without a recorded **consent** (own-hardware default vs explicit user opt-in), and every example is **scrubbed** of secrets/PII/paths before it can leave the machine (`consent.py`, `scrub.py`) — with an auditable manifest. Honest framing: for a coding agent the trajectory *is* the sensitive data, so scrubbing is defence-in-depth and **consent is the real safeguard**.
+- *Not built here:* the actual SFT/DPO **training run** (a separate GPU-box repo) and tier-3 curriculum. Each brain release will be benchmarked on escalation rate and a fixed mission suite; the loops compound — better brain → more honest validators → cleaner labels → better brain.
 
 ## The models
 
@@ -203,23 +223,28 @@ Off-the-shelf interim: Qwen3-Coder-30B-A3B as the network's best serving model t
 
 ```
 koretex-agent/          ← this repo (Python) — the product
-  koretex_agent/         BUILT (Phase 1) — the kernel package
+  koretex_agent/         BUILT — the kernel package
     client.py              OpenAI-compatible client (one provider; reasoning_effort)
     tools.py               the ~10 sandboxed tools + schemas
     session.py             bounded session loop (turn-cap detection, thinking policy)
     mission.py             coordinator: plan → lint → work → dual-validate → review
     plan_lint.py           deterministic assertion lint (reject fragile contracts)
-    schemas.py             work order / handoff / verdict / plan — grammar-constrained
+    concierge.py           tier-0 router: chat / task / mission + auto-escalation
+    training.py            loop 3: trajectory triples → worker/validator/routing datasets
+    scrub.py · consent.py  redact secrets/PII + consent gate (before any export)
+    export.py              consent-gated, scrubbed dataset export to S3
+    skills.py              loop 2: distil a passing mission → ranked SKILL.md + ledger
+    schemas.py             route / work order / handoff / verdict / plan / skill (grammar-constrained)
     budget.py              prefix-token accounting for the CI gate
     trajectory.py          (contract, trajectory, verdict) recorder
-    cli.py                 drive a single profile or a whole mission
-    profiles/              worker / validator / scrutiny / orchestrator (prompts + budgets)
-  scripts/               bench-mission · bench-report · worker-probe · probe-cutoff-validator
-  tests/                 unit + the CI prefix-budget gate + reliability tests
-  docs/                  this record, phase0/phase1 findings, model-eval, benchmarks
+    cli.py                 drive a profile, a mission, or the concierge
+    profiles/              worker · validator · scrutiny · orchestrator · concierge · skill-synthesizer
+  scripts/               bench-* · worker-probe · probe-cutoff-validator ·
+                         harvest-trajectories · export-datasets · synthesize-skill
+  tests/                 unit + the CI prefix-budget gate + reliability/training/skill tests
+  docs/                  this record, phase0/phase1 findings, model-eval, benchmarks, seeker-gtm, NEXT-STEPS
   phase0/                Phase 0 artifacts + the .venv + mission/bench workdirs
-  PLANNED                ladder/ (escalation) · coordinator/ (idle daemon) · installer/ ·
-                         training/ (SFT/DPO) · concierge + skill-synthesizer profiles
+  PLANNED                ladder/ (tier-3 escalation + counters) · coordinator/ (idle daemon) · installer/
 
 koretex-node/           ← separate repo (TypeScript) — unchanged, installed as a dependency
 marketplace/            ← separate repo (TypeScript) — the dispatcher; operated, not installed
@@ -231,13 +256,15 @@ marketplace/            ← separate repo (TypeScript) — the dispatcher; opera
 
 **Phase 1 — the kernel. ✅ Done + tuned** ([findings](docs/phase1-findings.md), [benchmarks](docs/benchmarks.md)). Runtime + worker/validator profiles within budget (CI gate from day one), constrained decoding at the serving layer, trajectory recorder, mission tier via vendored Zenith coordinator with small-model role prompts — plus the four Phase-1-as-built refinements (per-profile reasoning, stop-when-done, plan-lint, cut-off-validator handling). *Exit met: the csv2json mission that stock setups failed in Phase 0 completes end-to-end on the 35B-A3B (Q4) through the Koretex dispatcher, validators catching real defects; repeated runs pass consistently.*
 
-**Phase 2 — the ladder.** Escalation triggers + counters, tier-3 integration (network premium + BYO-key fallback), escalation-rate metric, terminal review. *Exit: a hard mission visibly escalates only its irreducible step and completes.*
+*The build has not followed the phases in order — the learning loops (Phase 4) and the tier-0 concierge (Phase 5, desktop) came early because each stage's data pointed there next. Terminal review shipped with Phase 1.*
 
-**Phase 3 — one install, two faces.** Unified installer (kernel + koretex-node + models + wallet), idle-policy coordinator, balance in the status line. *Exit: fresh machine → `curl | bash` → chatting agent + visibly earning node, zero manual steps.*
+**Phase 2 — the ladder. 🟡 partial.** Terminal review ✅ (in the mission tier). Still open: tier-3 integration (network premium + BYO-key fallback), the escalation triggers + counters, and the escalation-rate metric. *Exit: a hard mission visibly escalates only its irreducible step and completes.*
 
-**Phase 4 — the learning loops.** Skill-synthesizer + win/loss ledger + curator; session search; training pipeline producing the first SFT/DPO sets; first post-trained 15B release. *Exit: brain v1 beats its base model on the fixed mission suite and lowers the escalation rate.*
+**Phase 3 — one install, two faces. ⬜.** Unified installer (kernel + koretex-node + models + wallet), idle-policy coordinator, balance in the status line. *Exit: fresh machine → `curl | bash` → chatting agent + visibly earning node, zero manual steps.*
 
-**Phase 5 — the concierge.** Nano profile on desktop (memory + routing only), then mobile. *Exit: routing precision ≥ target on held-out work orders; mobile app consuming the network.*
+**Phase 4 — the learning loops. 🟡 mostly built.** ✅ trajectory harvest → worker/validator/routing SFT+DPO datasets; ✅ consent-gated scrubbed export (S3); ✅ skill-synthesizer + win/loss ledger. Still open: a background skill curator, and the first post-trained 15B release (the training run is a separate GPU-box repo). *Exit: brain v1 beats its base model on the fixed mission suite and lowers the escalation rate.*
+
+**Phase 5 — the concierge. 🟡 tier-0 built (desktop).** ✅ the concierge routes chat/task/mission and drives the ladder, with routing decisions logged for loop 3. Still open: on-device nano deployment and mobile (Solana Seeker — see [docs/seeker-gtm.md](docs/seeker-gtm.md)). *Exit: routing precision ≥ target on held-out work orders; mobile app consuming the network.*
 
 ## Risks
 
