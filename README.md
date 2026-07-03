@@ -24,7 +24,7 @@ Koretex Agent is a terminal AI assistant that pays for itself. Install it and yo
 | **Ladder tier 3** — 70B+ network / BYO-key escalation, triggers & counters | ⬜ designed | Phase 2 |
 | **Loop 3** — trajectory harvest → per-role SFT/DPO datasets | ✅ built | worker + validator + routing; gate-linked labels |
 | **Consent-gated, scrubbed export** (S3) | ✅ built | opt-in gate + secret/PII scrub *before* anything leaves the machine |
-| **Loop 2** — skill synthesis + win/loss ledger | ✅ built | distils a passing mission into a ranked, reusable `SKILL.md` |
+| **Loop 2** — skills: synthesis · auto-wiring · curator | ✅ built | distil → select-into-missions → score → merge/retire; a ranked, self-gardening `SKILL.md` library |
 | **GPU post-training run → brain v1** | ⬜ separate repo | datasets are produced here; training runs elsewhere |
 | **One install, two faces** — installer + idle-policy daemon | ⬜ designed | Phase 3 |
 | **Nano concierge on-device / mobile** (Solana Seeker) | ⬜ designed | [docs/seeker-gtm.md](docs/seeker-gtm.md) — phone = consumer client, not a serving node |
@@ -180,7 +180,25 @@ The Hermes learning loop, upgraded with ground truth Hermes never had:
 - After a gate-passed mission, a **skill-synthesizer** profile distills the passing workers' actions (pulled from the trajectory store by mission id) into a skill — [agentskills.io](https://agentskills.io) `SKILL.md`, one shared library, loadable via the existing `use_skill` tool. Skill *synthesis* is a judgment task (thinking on); it escalates to the premium tier initially and distills down later. *Demonstrated: a real csv2json mission distilled into a reusable `csv-to-json-cli` skill — generalized steps + pitfalls, not a transcript.*
 - Skills carry a **win/loss ledger**: a skill loaded into a mission that clears scores a win, one that fails a loss; `catalog_index` ranks by win-rate, and the relevance-filtered catalog (name + one line) is what a planner sees — bodies load just-in-time. Skill quality is measured, not vibes.
 - **The loop is auto-wired into missions:** each mission selects relevant catalog skills for its workers (by description overlap, win-rate-ranked), scores the ledger on its outcome, and distils a fresh skill on a pass — no manual step. *Demonstrated: the skill learned from one csv2json mission is auto-selected for the next.*
-- *Designed, not yet built:* a background curator (merge/retire), embedding-based relevance, session search as a concierge tool, and on-device memory files.
+- **A background curator** gardens the catalog from the ledger: it merges near-duplicate skills (keeping the better record, folding the loser's stats in) and retires proven losers (enough uses, win-rate below the floor) into an audit dir. Deterministic, runs on a schedule. *Demonstrated: a 4-skill catalog curated to 2 — a duplicate folded 1W into a 5W→6W survivor, a 1W/5L skill retired.*
+
+The full loop, end to end:
+
+```mermaid
+flowchart LR
+  mission["Gate-passed mission"] -->|distil| synth["skill-synthesizer<br/>→ SKILL.md"]
+  synth --> catalog["Skills catalog<br/>+ win/loss ledger"]
+  catalog -->|"select relevant<br/>(win-rate ranked)"| worker["Worker loads it<br/>via use_skill"]
+  worker --> outcome{"Mission<br/>outcome"}
+  outcome -->|cleared| win["ledger: win"]
+  outcome -->|failed| loss["ledger: loss"]
+  win --> catalog
+  loss --> catalog
+  catalog -->|"periodic"| curate["Curator:<br/>merge dups · retire losers"]
+  curate --> catalog
+```
+
+- *Designed, not yet built:* embedding-based relevance (vs today's keyword overlap), session search as a concierge tool, and on-device memory files.
 
 ### Loop 3 — the weights (months / releases) — ✅ harvest + export built (`koretex_agent/training.py`, `export.py`)
 
@@ -241,7 +259,7 @@ koretex-agent/          ← this repo (Python) — the product
     cli.py                 drive a profile, a mission, or the concierge
     profiles/              worker · validator · scrutiny · orchestrator · concierge · skill-synthesizer
   scripts/               bench-* · worker-probe · probe-cutoff-validator ·
-                         harvest-trajectories · export-datasets · synthesize-skill
+                         harvest-trajectories · export-datasets · synthesize-skill · curate-skills
   tests/                 unit + the CI prefix-budget gate + reliability/training/skill tests
   docs/                  this record, phase0/phase1 findings, model-eval, benchmarks, seeker-gtm, NEXT-STEPS
   phase0/                Phase 0 artifacts + the .venv + mission/bench workdirs
