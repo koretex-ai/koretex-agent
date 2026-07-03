@@ -71,4 +71,16 @@ CONCIERGE = Profile(
     thinking=False,
 )
 
-ALL = {p.name: p for p in (CONCIERGE, WORKER, VALIDATOR, SCRUTINY, ORCHESTRATOR)}
+# Loop 2: distills a gate-passed trajectory into a reusable skill. A judgment
+# task, not an agentic session — one constrained call, no tools, thinking ON
+# (it escalates to the premium tier initially and distills down over time).
+SKILL_SYNTHESIZER = Profile(
+    name="skill-synthesizer",
+    tools=(),
+    prefix_budget_tokens=3_000,
+    max_turns=1,
+    thinking=True,
+)
+
+ALL = {p.name: p for p in (CONCIERGE, WORKER, VALIDATOR, SCRUTINY, ORCHESTRATOR,
+                           SKILL_SYNTHESIZER)}

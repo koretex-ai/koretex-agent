@@ -26,6 +26,16 @@ class Route(BaseModel):
     reason: str = ""  # one line — for logs and routing training labels
 
 
+class Skill(BaseModel):
+    """A reusable technique distilled from a successful trajectory. Rendered to
+    agentskills.io Markdown (frontmatter + body) and loaded via the use_skill
+    tool. `description` is all a future agent sees in the relevance-filtered
+    catalog, so it must state *when* to use the skill."""
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,48}$")
+    description: str
+    body: str  # the how-to, Markdown — a checklist, not a transcript
+
+
 class WorkOrder(BaseModel):
     """What a tier hands down: the unit of work."""
     order_id: str
