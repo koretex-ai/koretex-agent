@@ -40,6 +40,7 @@ class Client:
         tools: list[dict] | None = None,
         response_format: dict | None = None,
         temperature: float = 0.2,
+        reasoning_effort: str | None = None,
     ) -> ChatResult:
         body: dict[str, Any] = {
             "model": self.cfg.model,
@@ -50,6 +51,13 @@ class Client:
             body["tools"] = tools
         if response_format:
             body["response_format"] = response_format
+        # OpenAI-standard reasoning control. "none" is honored by both the
+        # dispatcher's llama.cpp server and local Ollama (empirically: 35B
+        # 307→14 and qwen3:14b 380→14 completion tokens, <think> block gone).
+        # The Qwen `/no_think` text switch does NOT work through either serving
+        # path — llama.cpp treats it as literal prompt text and reasons *more*.
+        if reasoning_effort is not None:
+            body["reasoning_effort"] = reasoning_effort
 
         last_err: Exception | None = None
         for attempt in range(self.cfg.max_retries):

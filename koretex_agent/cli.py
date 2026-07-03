@@ -74,6 +74,7 @@ def main() -> None:
         HANDOFFS[profile.name],
         client=Client(cfg),
         max_turns=profile.max_turns,
+        thinking=profile.thinking,
     )
     print(json.dumps(result.model_dump(), indent=2))
 

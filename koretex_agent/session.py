@@ -22,6 +22,7 @@ def constrained_call(
     model_cls: type[BaseModel],
     usage_sink: list[dict] | None = None,
     attempts: int = 3,
+    reasoning_effort: str | None = None,
 ):
     """Chat with grammar-constrained decoding, validate client-side (the wire
     schema is sanitized — pydantic holds the full contract), retry on mismatch
@@ -29,7 +30,11 @@ def constrained_call(
     msgs = list(messages)
     last: ValidationError | None = None
     for _ in range(attempts):
-        res = client.chat(msgs, response_format=response_schema(model_cls))
+        res = client.chat(
+            msgs,
+            response_format=response_schema(model_cls),
+            reasoning_effort=reasoning_effort,
+        )
         if usage_sink is not None:
             usage_sink.append(res.usage)
         try:
@@ -56,6 +61,14 @@ def strip_thinking(msg: dict) -> dict:
     return {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")}
 
 
+# Reasoning-mode policy → OpenAI `reasoning_effort`. Thinking on: leave it
+# unset (model's default). Off: "none" — honored by the dispatcher's llama.cpp
+# and local Ollama alike, and applied to *every* call in the session (agentic
+# turns and the terminal handoff) so no reasoning leaks back in.
+def _effort(thinking: bool) -> str | None:
+    return None if thinking else "none"
+
+
 def run_session(
     profile_name: str,
     system_prompt: str,
@@ -64,9 +77,11 @@ def run_session(
     handoff_model: type[BaseModel],
     client: Client | None = None,
     max_turns: int = 20,
+    thinking: bool = True,
 ) -> SessionResult:
     client = client or Client()
     rec = TrajectoryRecorder(profile_name, order.model_dump())
+    effort = _effort(thinking)
 
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
@@ -78,7 +93,9 @@ def run_session(
     ptok = ctok = 0
     turns = 0
     for turns in range(1, max_turns + 1):
-        res: ChatResult = client.chat(messages, tools=toolbox.schemas())
+        res: ChatResult = client.chat(
+            messages, tools=toolbox.schemas(), reasoning_effort=effort
+        )
         ptok += res.usage.get("prompt_tokens", 0)
         ctok += res.usage.get("completion_tokens", 0)
         rec.usage(res.usage)
@@ -113,7 +130,9 @@ def run_session(
         }
     )
     usage_sink: list[dict] = []
-    handoff, _ = constrained_call(client, messages, handoff_model, usage_sink)
+    handoff, _ = constrained_call(
+        client, messages, handoff_model, usage_sink, reasoning_effort=effort
+    )
     for u in usage_sink:
         ptok += u.get("prompt_tokens", 0)
         ctok += u.get("completion_tokens", 0)

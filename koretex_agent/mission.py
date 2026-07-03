@@ -131,7 +131,8 @@ class Mission:
         toolbox = Toolbox(self.state.workdir, skills_dir=self.skills_dir,
                           allowed=list(profile.tools))
         res = run_session(profile.name, profile.system_prompt(), order, toolbox,
-                          handoff_model, client=self.client, max_turns=profile.max_turns)
+                          handoff_model, client=self.client, max_turns=profile.max_turns,
+                          thinking=profile.thinking)
         self._count(res)
         self._save()
         return res
