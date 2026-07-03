@@ -21,6 +21,12 @@ class ModelConfig:
     api_key: str = os.environ.get("KORETEX_API_KEY", "local")
     timeout_s: float = 300.0
     max_retries: int = 3
+    # Embeddings power tier-0 skill relevance. They run *locally* by design —
+    # matching a task to a skill is a routing decision that shouldn't cost a
+    # network round-trip to the work tier — so the embed endpoint defaults to
+    # local Ollama even when base_url points at the dispatcher.
+    embed_base_url: str = os.environ.get("KORETEX_AGENT_EMBED_BASE_URL", "http://localhost:11434/v1")
+    embed_model: str = os.environ.get("KORETEX_AGENT_EMBED_MODEL", "nomic-embed-text")
 
 
 @dataclass
@@ -75,3 +81,27 @@ class Client:
                 last_err = e
                 time.sleep(2**attempt)
         raise RuntimeError(f"chat failed after {self.cfg.max_retries} attempts: {last_err}")
+
+    def embed(self, inputs: list[str]) -> list[list[float]]:
+        """Batch-embed strings via the OpenAI-compatible /embeddings endpoint
+        (local Ollama by default — see ModelConfig.embed_base_url). Returns one
+        vector per input, in order. Raises on failure so callers can fall back."""
+        if not inputs:
+            return []
+        last_err: Exception | None = None
+        for attempt in range(self.cfg.max_retries):
+            try:
+                r = self._http.post(
+                    f"{self.cfg.embed_base_url}/embeddings",
+                    headers={"Authorization": f"Bearer {self.cfg.api_key}"},
+                    json={"model": self.cfg.embed_model, "input": inputs},
+                )
+                r.raise_for_status()
+                data = r.json()
+                # OpenAI returns data sorted by "index"; sort defensively.
+                rows = sorted(data["data"], key=lambda d: d.get("index", 0))
+                return [row["embedding"] for row in rows]
+            except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
+                last_err = e
+                time.sleep(2**attempt)
+        raise RuntimeError(f"embed failed after {self.cfg.max_retries} attempts: {last_err}")

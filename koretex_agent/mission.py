@@ -61,10 +61,13 @@ class MissionState(BaseModel):
 class Mission:
     def __init__(self, brief: str, workdir: str, client: Client | None = None,
                  skills_dir: str | None = None, *, use_skills: bool = True,
-                 synthesize_on_pass: bool = True):
+                 synthesize_on_pass: bool = True, embedder=None):
         self.client = client or Client()
         self.use_skills = use_skills
         self.synthesize_on_pass = synthesize_on_pass
+        # Optional semantic skill relevance. None → keyword overlap (offline
+        # default). Real runs inject a local embedder via the CLI.
+        self.embedder = embedder
         # The skills catalog doubles as the use_skill source. When skills are on
         # and no explicit dir is given, default to the shared catalog so workers
         # can load previously-learned skills.
@@ -217,7 +220,7 @@ class Mission:
         if not self.use_skills:
             return []
         from .skills import select_skills
-        return select_skills(task_desc, self.catalog)
+        return select_skills(task_desc, self.catalog, embedder=self.embedder)
 
     def _finalize_skills(self) -> None:
         """Once the mission resolves: score the ledger for every skill it loaded

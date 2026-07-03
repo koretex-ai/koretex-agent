@@ -8,6 +8,7 @@ Faster than loop 3 (weights): a good skill improves behaviour immediately, with
 no retrain."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -16,6 +17,7 @@ from pathlib import Path
 RETIRED_DIR = "_retired"
 
 from .client import Client
+from .embeddings import cosine
 from .profiles import SKILL_SYNTHESIZER
 from .schemas import Skill
 from .session import _effort, constrained_call
@@ -95,20 +97,112 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2}
 
 
-def select_skills(task_text: str, catalog: Path = SKILLS_DIR, k: int = 3) -> list[str]:
-    """Pick up to k skills relevant to a task: keyword overlap between the task
-    and each skill's name+description, tie-broken by win-rate. Only skills with
-    real overlap are returned — no irrelevant skills injected."""
+# Skills below this cosine to the task are considered semantically unrelated and
+# not injected (keyword overlap can still rescue an exact-term match).
+# Calibrated for nomic-embed-text (with query/document prefixes) on a real skill
+# catalog: that model has a compressed range — unrelated pairs sit at 0.40–0.55,
+# genuine matches at 0.60–0.68 — so the floor lands in the gap at 0.58. A
+# different embed model needs its own calibration; override via select_skills.
+EMBED_MIN_COSINE = 0.58
+
+
+def _skill_doc(s: dict) -> str:
+    return f"{s['name']}\n{s['description']}"
+
+
+def _embed_cache_path(catalog: Path, name: str) -> Path:
+    return catalog / name / "embedding.json"
+
+
+def _load_cached_vector(catalog: Path, name: str, text: str, model: str) -> list[float] | None:
+    """A skill's document vector is static, so cache it on disk keyed by the
+    embed model + a content hash — recompute only when either changes."""
+    p = _embed_cache_path(catalog, name)
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return None
+    h = hashlib.sha1(text.encode()).hexdigest()
+    if d.get("model") == model and d.get("hash") == h:
+        return d.get("vector")
+    return None
+
+
+def _store_cached_vector(catalog: Path, name: str, text: str, model: str, vector: list[float]) -> None:
+    p = _embed_cache_path(catalog, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha1(text.encode()).hexdigest()
+    p.write_text(json.dumps({"model": model, "hash": h, "vector": vector}))
+
+
+def _select_keyword(task_text: str, index: list[dict], k: int) -> list[str]:
     task_words = _words(task_text)
     if not task_words:
         return []
     scored = []
-    for s in catalog_index(catalog):
+    for s in index:
         overlap = len(task_words & _words(s["name"] + " " + s["description"]))
         if overlap:
             scored.append((overlap, s["win_rate"] or 0.0, s["name"]))
     scored.sort(reverse=True)
     return [name for _, _, name in scored[:k]]
+
+
+def select_skills(task_text: str, catalog: Path = SKILLS_DIR, k: int = 3,
+                  embedder=None, min_cosine: float = EMBED_MIN_COSINE) -> list[str]:
+    """Pick up to k skills relevant to a task.
+
+    With an ``embedder`` (see koretex_agent.embeddings): semantic cosine is the
+    primary signal — this catches paraphrase that keyword overlap misses (a task
+    "convert a spreadsheet to JSON" matches a `csv-to-json-cli` skill). A skill
+    is injected only if it clears ``min_cosine`` OR shares a real keyword, so no
+    unrelated skill is ever loaded; ties break on keyword overlap then win-rate.
+    Skill vectors are cached on disk (static per skill).
+
+    Without an embedder — or if embedding fails / the model is absent — falls
+    back to keyword overlap, so offline runs behave exactly as before."""
+    index = catalog_index(catalog)
+    if not index:
+        return []
+
+    if embedder is not None and getattr(embedder, "alive", True):
+        try:
+            qvec = embedder.embed_query(task_text)
+            model = getattr(embedder, "model", "unknown")
+            # Gather each skill's document vector, using the cache and batching
+            # the misses into a single embed call.
+            vectors: dict[str, list[float]] = {}
+            misses: list[tuple[str, str]] = []  # (name, doc_text)
+            for s in index:
+                text = _skill_doc(s)
+                cached = _load_cached_vector(catalog, s["name"], text, model)
+                if cached is not None:
+                    vectors[s["name"]] = cached
+                else:
+                    misses.append((s["name"], text))
+            if misses:
+                fresh = embedder.embed_documents([t for _, t in misses])
+                for (name, text), vec in zip(misses, fresh):
+                    _store_cached_vector(catalog, name, text, model, vec)
+                    vectors[name] = vec
+
+            task_words = _words(task_text)
+            scored = []
+            for s in index:
+                cos = cosine(qvec, vectors[s["name"]])
+                kw = len(task_words & _words(s["name"] + " " + s["description"]))
+                if cos >= min_cosine or kw:
+                    scored.append((cos, kw, s["win_rate"] or 0.0, s["name"]))
+            scored.sort(reverse=True)
+            return [name for _, _, _, name in scored[:k]]
+        except Exception:
+            # Embed model absent/unreachable — degrade to keyword. The embedder
+            # marks itself dead so we don't retry it per task this run.
+            pass
+
+    return _select_keyword(task_text, index, k)
 
 
 # ── synthesis ────────────────────────────────────────────────────────────

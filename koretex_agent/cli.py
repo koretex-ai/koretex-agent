@@ -52,8 +52,12 @@ def main() -> None:
 
     if args.profile == "mission":
         from .mission import Mission
+        from .embeddings import default_embedder
 
-        m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir)
+        # Skill relevance embeds locally (see ModelConfig.embed_base_url); falls
+        # back to keyword overlap if the embed model isn't available.
+        m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir,
+                    embedder=default_embedder(Client(cfg)))
         state = m.run()
         print(state.model_dump_json(indent=2))
         return

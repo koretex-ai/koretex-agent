@@ -179,7 +179,8 @@ The Hermes learning loop, upgraded with ground truth Hermes never had:
 
 - After a gate-passed mission, a **skill-synthesizer** profile distills the passing workers' actions (pulled from the trajectory store by mission id) into a skill — [agentskills.io](https://agentskills.io) `SKILL.md`, one shared library, loadable via the existing `use_skill` tool. Skill *synthesis* is a judgment task (thinking on); it escalates to the premium tier initially and distills down later. *Demonstrated: a real csv2json mission distilled into a reusable `csv-to-json-cli` skill — generalized steps + pitfalls, not a transcript.*
 - Skills carry a **win/loss ledger**: a skill loaded into a mission that clears scores a win, one that fails a loss; `catalog_index` ranks by win-rate, and the relevance-filtered catalog (name + one line) is what a planner sees — bodies load just-in-time. Skill quality is measured, not vibes.
-- **The loop is auto-wired into missions:** each mission selects relevant catalog skills for its workers (by description overlap, win-rate-ranked), scores the ledger on its outcome, and distils a fresh skill on a pass — no manual step. *Demonstrated: the skill learned from one csv2json mission is auto-selected for the next.*
+- **The loop is auto-wired into missions:** each mission selects relevant catalog skills for its workers, scores the ledger on its outcome, and distils a fresh skill on a pass — no manual step. *Demonstrated: the skill learned from one csv2json mission is auto-selected for the next.*
+- **Skill relevance is semantic, not keyword.** Triggering a skill (task → skill) runs through a **local embedding model** (nomic-embed-text via the kernel's OpenAI-compatible client — on-device by design, since a routing decision must not cost a network round-trip to the work tier). Ranking is hybrid: cosine similarity is the primary signal (it catches paraphrase keyword overlap misses — "reshape tabular data into objects" matches a `csv-to-json-cli` skill with no shared words), a keyword floor rescues exact-term matches, and win-rate breaks ties. A calibrated cosine floor (0.58 for nomic, whose unrelated pairs sit at ~0.5) keeps unrelated skills out. Skill vectors are cached on disk; only the task is embedded live. **Graceful fallback:** no embed model / server down → keyword overlap, so offline runs and CI are unchanged. *Demonstrated on the real model: a 4-skill catalog, 6 paraphrased queries, every one routed to the correct skill and the unrelated query to none.*
 - **A background curator** gardens the catalog from the ledger: it merges near-duplicate skills (keeping the better record, folding the loser's stats in) and retires proven losers (enough uses, win-rate below the floor) into an audit dir. Deterministic, runs on a schedule. *Demonstrated: a 4-skill catalog curated to 2 — a duplicate folded 1W into a 5W→6W survivor, a 1W/5L skill retired.*
 
 The full loop, end to end:
@@ -198,7 +199,7 @@ flowchart LR
   curate --> catalog
 ```
 
-- *Designed, not yet built:* embedding-based relevance (vs today's keyword overlap), session search as a concierge tool, and on-device memory files.
+- *Designed, not yet built:* session search as a concierge tool, and on-device memory files. (Curation dedup stays on keyword Jaccard on purpose — merging is destructive, and the embed model's compressed similarity range makes cosine-dedup too risky without separate calibration.)
 
 ### Loop 3 — the weights (months / releases) — ✅ harvest + export built (`koretex_agent/training.py`, `export.py`)
 
