@@ -2,7 +2,7 @@
 
 *A lightweight, self-funding, self-improving AI agent — every install is also a provider node on the [Koretex](https://dispatcher.koretex.ai) distributed inference network.*
 
-> **Status: design phase, Phase 0 validation complete.** This document is the project's founding design record — architecture, reasoning, and roadmap — written so a newcomer can start from zero. Empirical grounding for the key decisions is in [docs/phase0-findings.md](docs/phase0-findings.md).
+> **Status: Phase 1 (the kernel) built and tuned; the Phase 1 exit mission now passes end-to-end on the network.** This document is the founding design record — architecture, reasoning, and roadmap. The core design below is intact; the new [Phase 1 as built](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles) section records the refinements that emerged while making real 15–35B models behave. Empirical grounding: [docs/phase0-findings.md](docs/phase0-findings.md), [docs/phase1-findings.md](docs/phase1-findings.md), and the run-by-run [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
 
@@ -36,12 +36,14 @@ That last line is a deliberate reversal of an earlier plan to fork Hermes. Herme
 
 There is one runtime — the **kernel**: a single OpenAI-compatible client pointed at the Koretex endpoint, ~10 tools, an ACP server, and a trajectory recorder. Every role in the system is the kernel launched with a different **profile** = system prompt + tool subset + model tier + a hard context budget:
 
-| Profile | Model tier | Prefix budget (prompt + schemas) | Job |
-|---|---|---|---|
-| Concierge | 1–4B, on-device, always resident | ≤ 1.5K tokens | converse, remember, route |
-| Worker | 15B | ≤ 3K + task payload | execute one bounded task |
-| Validator | 15B | ≤ 2.5K + contract | independently verify one task |
-| Orchestrator | largest available (escalated early on; distilled down over time) | ≤ 5K | plan and replan missions |
+| Profile | Model tier | Prefix budget (prompt + schemas) | Reasoning | Job |
+|---|---|---|---|---|
+| Concierge | 1–4B, on-device, always resident | ≤ 1.5K tokens | — | converse, remember, route |
+| Worker | 15B | ≤ 3K + task payload | off | execute one bounded task |
+| Validator · Scrutiny | 15B | ≤ 2.5K + contract | off | two independent lanes verify one task |
+| Orchestrator | largest available (escalated early on; distilled down over time) | ≤ 5K | **on** | plan and replan missions |
+
+The "verify" role ships as **two profiles / two independent lanes** — `validator` runs the live surface (executes the contract commands) and `scrutiny` reads the source for frauds — and a task clears only when both pass. The reasoning column is the Phase 1 tuning: thinking helps only the planner ([details below](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles)).
 
 **Prefix budgets are enforced by CI**: a build-time test assembles each profile's real prefix, counts tokens, and fails the build if over budget. This is the structural answer to how Hermes drifted to 25K — good intentions don't survive contact with feature growth; failing builds do.
 
@@ -79,18 +81,44 @@ Substantial work runs as a **mission**: a deterministic state machine (task DAG 
 
 ```mermaid
 flowchart TD
-  brief["Work order"] --> orch["Orchestrator<br/>plans & replans the task DAG"]
-  orch --> worker["Worker — fresh session,<br/>bounded context"]
+  brief["Work order"] --> orch["Orchestrator (thinking ON)<br/>plans & replans the task DAG"]
+  orch --> lint{"Plan-lint (deterministic)<br/>reject fragile / vacuous assertions"}
+  lint -->|"objections → one repair pass"| orch
+  lint -->|clean| worker["Worker (thinking OFF)<br/>fresh session · stops when done"]
   worker --> v1["Scrutiny validator<br/>reads code & artifacts"]
   worker --> v2["Live-surface validator<br/>runs the real thing"]
-  v1 --> gate{"Gate — both must pass"}
+  v1 --> gate{"Gate — both must pass<br/>(cut-off verdicts ignored)"}
   v2 --> gate
   gate -->|"failure → attention"| orch
-  gate -->|pass| tr["Terminal reviewer —<br/>fresh eyes vs. the brief"]
+  gate -->|pass| tr["Terminal review (larger turn budget)<br/>fresh eyes vs. the brief"]
   tr --> done["Done"]
 ```
 
 Why this lets a 15B do serious work: every LLM call is short-context and narrow (the regime Phase 0 showed a 14B is best at); the bookkeeping — dependencies, gates, stopping — cannot hallucinate because it's code; "done" requires two independent validators' executed evidence plus a fresh-eyes terminal review (the exact mechanism that catches the plausible-code-broken-tests failure we watched a naive 14B ship). Validator evidence uses constrained formats (raw pasted command output, not prose) — Phase 0 showed verdict-level honesty is good but free-text evidence gets embellished.
+
+### Phase 1 as built — tuning a 15–35B into disciplined roles
+
+The design above survived contact with real open models, but *making it work* surfaced four refinements. Each is empirically grounded (run-by-run numbers in [docs/benchmarks.md](docs/benchmarks.md)) and now enforced in code, not prompts-and-hope. Together they took the csv2json mission — which stock setups failed in Phase 0 — to a clean end-to-end pass on Qwen3.6-35B-A3B (Q4) over the Koretex dispatcher.
+
+1. **Reasoning-mode is per profile.** A model's `<think>` block is planning judgment the orchestrator needs, but dead weight for the mechanical worker/validator roles — one mission burned ~288K tokens largely on it. Thinking is now ON only for the orchestrator; workers and validators run with `reasoning_effort: "none"`. That OpenAI-standard switch is the portable one — both the dispatcher's llama.cpp and local Ollama honor it (35B: 307→14 completion tokens on a probe), whereas the Qwen `/no_think` text token is silently ignored (or makes it reason *more*).
+
+2. **Sessions stop when the work is done.** A worker that finishes at turn 8 must not keep re-verifying assertion-by-assertion to its 20-turn cap — every extra turn re-sends the whole accumulated context, and that context, not generation, dominates the bill. Worker prompts now stop the moment executed evidence shows the contract passes (a single-worker probe: 20 turns / 85K tokens → 8 turns / 16K).
+
+3. **A deterministic plan-lint guards the contracts.** The orchestrator sometimes emits fragile checks. A code stage between plan and execution rejects them — self-passing `|| true`, existence-only `test -f`, **case-sensitive greps on documentation prose**, confused `\-\-` escaping — and bounces the plan back for one repair pass (the validators remain the real gate, so a still-dirty plan proceeds rather than blocking). This came from a real run where one case-sensitive `grep 'usage'` against a README that correctly writes "**U**sage" sent two workers into a ~26-turn spiral fighting a check that could never pass.
+
+4. **A cut-off validator is not believed.** A validator that runs out of turns produces its verdict under duress — in one run a cut-off terminal reviewer returned a false "3 tests failed" on a suite that actually passed 26/26. Verdict reliability is now structural:
+
+```mermaid
+flowchart TD
+  run["Validator lane runs<br/>(batches its checks)"] --> cap{"Hit turn cap?<br/>(cut off mid-check)"}
+  cap -->|no| trust["Trust the verdict"]
+  cap -->|yes| rerun["Re-run once, fresh context"]
+  rerun --> cap2{"Cut off again?"}
+  cap2 -->|no| trust
+  cap2 -->|yes| inc["Inconclusive → verdict ignored<br/>· the other lane still checks honestly<br/>· terminal review accepts on the per-task gates<br/>· event recorded in mission notes"]
+```
+
+The payoff shows up across repeated runs of the same mission: maxed-out (cut-off) sessions fell from 4 → 3 → 1 → 0 as these landed, total tokens roughly halved (415K → 179K), and the one spurious failure is the exact case guard #4 now catches.
 
 ### One machine, two faces
 
@@ -175,16 +203,23 @@ Off-the-shelf interim: Qwen3-Coder-30B-A3B as the network's best serving model t
 
 ```
 koretex-agent/          ← this repo (Python) — the product
-  kernel/                 runtime: client, tools, ACP, trajectory recorder
-  profiles/               concierge / worker / validator / orchestrator / skill-synthesizer
-                          (prompts + tool subsets + budgets; CI-enforced)
-  mission/                vendored Zenith coordinator + our schemas
-  ladder/                 escalation policy, triggers, KPIs
-  coordinator/            idle-policy daemon
-  installer/              one command: agent + koretex-node + models + wallet
-  training/               trajectory store, filters, SFT/DPO pipeline
-  docs/                   this record, phase findings, ADRs
-  phase0/                 Phase 0 experiment artifacts (kept for reference)
+  koretex_agent/         BUILT (Phase 1) — the kernel package
+    client.py              OpenAI-compatible client (one provider; reasoning_effort)
+    tools.py               the ~10 sandboxed tools + schemas
+    session.py             bounded session loop (turn-cap detection, thinking policy)
+    mission.py             coordinator: plan → lint → work → dual-validate → review
+    plan_lint.py           deterministic assertion lint (reject fragile contracts)
+    schemas.py             work order / handoff / verdict / plan — grammar-constrained
+    budget.py              prefix-token accounting for the CI gate
+    trajectory.py          (contract, trajectory, verdict) recorder
+    cli.py                 drive a single profile or a whole mission
+    profiles/              worker / validator / scrutiny / orchestrator (prompts + budgets)
+  scripts/               bench-mission · bench-report · worker-probe · probe-cutoff-validator
+  tests/                 unit + the CI prefix-budget gate + reliability tests
+  docs/                  this record, phase0/phase1 findings, model-eval, benchmarks
+  phase0/                Phase 0 artifacts + the .venv + mission/bench workdirs
+  PLANNED                ladder/ (escalation) · coordinator/ (idle daemon) · installer/ ·
+                         training/ (SFT/DPO) · concierge + skill-synthesizer profiles
 
 koretex-node/           ← separate repo (TypeScript) — unchanged, installed as a dependency
 marketplace/            ← separate repo (TypeScript) — the dispatcher; operated, not installed
@@ -194,7 +229,7 @@ marketplace/            ← separate repo (TypeScript) — the dispatcher; opera
 
 **Phase 0 — validate the premises. ✅ Done** ([findings](docs/phase0-findings.md)): bounded-session worker/validator viability on 14B confirmed; naive-loop and fat-prefix failure modes confirmed; fork-vs-build decision made.
 
-**Phase 1 — the kernel.** Runtime + worker/validator profiles within budget (CI gate from day one), constrained decoding at the serving layer, trajectory recorder, mission tier via vendored Zenith coordinator with small-model role prompts. *Exit: a mission that stock setups failed in Phase 0 (csv2json with a working test suite) completes end-to-end on a 15B through the Koretex endpoint, with the validator catching at least one real defect along the way.*
+**Phase 1 — the kernel. ✅ Done + tuned** ([findings](docs/phase1-findings.md), [benchmarks](docs/benchmarks.md)). Runtime + worker/validator profiles within budget (CI gate from day one), constrained decoding at the serving layer, trajectory recorder, mission tier via vendored Zenith coordinator with small-model role prompts — plus the four Phase-1-as-built refinements (per-profile reasoning, stop-when-done, plan-lint, cut-off-validator handling). *Exit met: the csv2json mission that stock setups failed in Phase 0 completes end-to-end on the 35B-A3B (Q4) through the Koretex dispatcher, validators catching real defects; repeated runs pass consistently.*
 
 **Phase 2 — the ladder.** Escalation triggers + counters, tier-3 integration (network premium + BYO-key fallback), escalation-rate metric, terminal review. *Exit: a hard mission visibly escalates only its irreducible step and completes.*
 
