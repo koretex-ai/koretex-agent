@@ -98,7 +98,11 @@ The m2/m3 consistency repeats proved the worker-side fixes hold (0 worker maxout
 - validator.md / scrutiny.md tell the lanes to **batch checks into fewer turns** (still attributing each item's raw output). Budgets fine (validator 426/2500, scrutiny 399/2500).
 - Tests: `tests/test_validator_reliability.py` (cap detection, re-run-once, inconclusive handling, spurious-FAIL suppression, conclusive-FAIL still blocks). Suite now 29 passing.
 
-**Still open:** run a real mission (m4) to confirm in practice — validators should max out less (batching) and, when one does, no spurious mission failure. This is the T3 validation for 2b.
+**Validated (2026-07-03):**
+- *Prevention (batching)* — real mission `m4`: 178,903 tokens, review PASS, **0 maxed sessions** (validators at 9/2/8 turns, were maxing at 12). Best run yet. Caveat: 2-task plan that run, so not a clean token A/B.
+- *Cure (don't trust a cut-off validator)* — since m4 maxed nothing, the safety net was field-tested with a **forced-cap probe** (`scripts/probe-cutoff-validator.py`, validators pinned to cap=2 on local qwen3:14b, plan injected to skip the fragile 14b orchestrator). Result: scrutiny lane hit the cap twice → re-run fired → verdict marked inconclusive and ignored → task cleared → mission `done`, **no spurious failure**. Exactly the m2 case, now handled. `notes` recorded the event.
+
+Both halves of 2b are now demonstrated. 2b is complete.
 
 ### 3. Concierge → mission wiring (tier 0 drives the ladder)
 Build the routing entrypoint: a `concierge` profile/loop (Qwen3-4B) that takes a user message, emits the `Route` schema (concierge/task/mission — already prototyped and 5/5 correct), and dispatches: chat locally, or spin a single worker (tier 1), or a full mission (tier 2). This is the first piece of the actual product UX. Escalation triggers between tiers are in the README design.
