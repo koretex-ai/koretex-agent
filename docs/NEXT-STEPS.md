@@ -54,8 +54,18 @@ Implemented:
 
 **Takeaway that reshapes priorities:** with thinking off, the dominant cost is now prompt/context tokens driven by **turn count**, not reasoning. Early worker termination (workers hitting `max_turns` instead of stopping when done) is likely a bigger token lever than thinking mode was — see new step 1b.
 
-### 1b. Make workers terminate when done (new — likely the bigger token lever)
-Workers run to `max_turns` (20) even after the task is finished — the smoke test and the mission both show sessions not stopping early, and each extra turn re-sends the whole accumulated context (this is why prompt tokens dominate now). Investigate: does the worker emit a no-tool-call message to stop (the loop's break condition), or does it keep making redundant tool calls? Add an explicit "you're done — stop calling tools" affordance and/or a completion self-check, then re-measure. Expect this to cut prompt tokens meaningfully.
+### 1b. Make workers terminate when done — ✅ prompt fix landed (2026-07-03), full-mission confirm still open
+**Investigation (from the no-think mission trajectories):** most sessions DO stop early; the problem is specific. The first worker (T01) hit `max_turns=20` without ever stopping — but it finished all real work by turn 13 (cli.py written, 16 tests passing, README done). Turns 14–20 were pure ceremony: it re-verified each contract assertion **one at a time, one per turn** (VAL-001, VAL-002, …), and ran out of turns still doing it. Every ceremonial turn re-sends the full accumulated context (all file contents it wrote) — that's the prompt-token sink. The terminal validator similarly maxed at 12 turns.
+
+**Fix:** rewrote `profiles/worker.md` — verify once and batch related checks into a single command; do NOT re-verify assertion-by-assertion across turns (independent validators re-check everything anyway); STOP the moment executed output shows the assertions pass ("stopping early is correct, not lazy"). Worker prefix budget unaffected (549/3000).
+
+**Measured (same T01 contract, same 35B via dispatcher, single-worker probe):**
+- Baseline (maxed at 20 turns): prompt 81,579 + completion 3,874 = **85,453**.
+- Fixed (stops at 8 turns, done=true, work correct): prompt 15,132 + completion 979 = **16,111**.
+- **−81% for that worker session.** Prompt tokens dominate the saving (81,579 → 15,132) because they compound with turn count.
+- Caveats: N=1, and the baseline was the worst-case maxed-out session (most sessions already stopped fine), so the mission-wide drop will be smaller than 81% — but that first worker was ~30% of the whole mission's tokens, so the dent is large.
+
+**Still open:** re-run the full 35B mission to get the clean mission-level number (step 1 taught us single-call numbers don't always predict the mission total — worth confirming). Consider the same "batch your checks" nudge for the validator if it keeps maxing out. A structural backstop (inject a "turns running low, wrap up" reminder near `max_turns`) is a cheap complement if prompt-only proves unreliable across tasks.
 
 ### 2. Deterministic plan-lint (carried from Phase 1)
 The orchestrator sometimes emits weak/broken contracts (14B: `pytest || true`, bare `test -f`; 35B: a self-contradictory grep, and it put the command in `statement` and left `command` null). Add a code-level lint between `plan()` and execution that rejects:
