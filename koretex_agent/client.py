@@ -105,3 +105,20 @@ class Client:
                 last_err = e
                 time.sleep(2**attempt)
         raise RuntimeError(f"embed failed after {self.cfg.max_retries} attempts: {last_err}")
+
+
+def escalation_client_from_env() -> "Client | None":
+    """The tier-3 client: a stronger model for irreducible steps. Configured
+    separately from the work tier (its own model, and optionally its own endpoint
+    / key for a BYO-key premium provider). Returns None when unset — tier-3 then
+    stays off and missions behave as if escalation didn't exist."""
+    model = os.environ.get("KORETEX_AGENT_ESCALATION_MODEL")
+    if not model:
+        return None
+    return Client(ModelConfig(
+        base_url=os.environ.get("KORETEX_AGENT_ESCALATION_BASE_URL",
+                                os.environ.get("KORETEX_AGENT_BASE_URL", "http://localhost:11434/v1")),
+        model=model,
+        api_key=os.environ.get("KORETEX_AGENT_ESCALATION_API_KEY",
+                               os.environ.get("KORETEX_API_KEY", "local")),
+    ))

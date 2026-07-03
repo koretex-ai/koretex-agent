@@ -26,9 +26,14 @@ from .schemas import (
     WorkOrder,
 )
 from .session import constrained_call, run_session
+from .tiers import Tier, TierLedger
 from .tools import Toolbox
 
 MAX_ATTEMPTS_PER_TASK = 3
+# How many mission steps may escalate to tier 3 (a stronger model). A hard cap:
+# tier-3 is for the genuinely irreducible step, and keeping it rare is what
+# protects the ≥90%-of-tokens-at-tier-≤2 KPI (see tiers.py).
+DEFAULT_ESCALATION_BUDGET = 2
 # The terminal review judges the whole workdir against the entire brief — many
 # more assertions than a single task's gate — so it gets more room than a
 # per-task validator lane (which uses its profile's 12).
@@ -52,7 +57,9 @@ class MissionState(BaseModel):
     status: str = "planning"  # planning | running | review | done | failed
     tasks: list[TaskRecord] = []
     terminal_review: dict | None = None
-    tokens: dict[str, int] = {"prompt": 0, "completion": 0}
+    tokens: dict[str, int] = {"prompt": 0, "completion": 0}  # aggregate (back-compat)
+    ledger: TierLedger = TierLedger()  # per-tier token accounting → escalation-rate KPI
+    escalations: list[dict] = []  # tier-3 escalations: {task_id, trigger, cleared}
     notes: list[str] = []  # reliability events (e.g. inconclusive validator lanes)
     skills_used: list[str] = []  # catalog skills injected into workers this mission
     skills_scored: bool = False  # ledger updated on resolution (guards resume)
@@ -61,10 +68,16 @@ class MissionState(BaseModel):
 class Mission:
     def __init__(self, brief: str, workdir: str, client: Client | None = None,
                  skills_dir: str | None = None, *, use_skills: bool = True,
-                 synthesize_on_pass: bool = True, embedder=None):
+                 synthesize_on_pass: bool = True, embedder=None,
+                 escalation_client: Client | None = None,
+                 escalation_budget: int = DEFAULT_ESCALATION_BUDGET):
         self.client = client or Client()
         self.use_skills = use_skills
         self.synthesize_on_pass = synthesize_on_pass
+        # Tier-3: a stronger model for irreducible steps. None → tier-3 off, a
+        # stuck step just fails as before (graceful). Real runs inject it via env.
+        self.escalation_client = escalation_client
+        self.escalation_budget = escalation_budget
         # Optional semantic skill relevance. None → keyword overlap (offline
         # default). Real runs inject a local embedder via the CLI.
         self.embedder = embedder
@@ -92,9 +105,18 @@ class Mission:
     def _save(self) -> None:
         (self.dir / "state.json").write_text(self.state.model_dump_json(indent=1))
 
-    def _count(self, res) -> None:
+    def _count(self, res, tier: Tier = Tier.MISSION) -> None:
         self.state.tokens["prompt"] += res.prompt_tokens
         self.state.tokens["completion"] += res.completion_tokens
+        self.state.ledger.add(tier, res.prompt_tokens, res.completion_tokens)
+
+    def _count_usage(self, usage: list[dict], tier: Tier = Tier.MISSION) -> None:
+        """Charge raw usage dicts (orchestrator constrained calls) to a tier."""
+        for u in usage:
+            p, c = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+            self.state.tokens["prompt"] += p
+            self.state.tokens["completion"] += c
+            self.state.ledger.add(tier, p, c)
 
     # ── planning: one constrained call, no tools ─────────────────────────
     def plan(self) -> None:
@@ -123,9 +145,7 @@ class Mission:
             ]
             plan, _ = constrained_call(self.client, msgs, Plan, usage_sink)
 
-        for u in usage_sink:
-            self.state.tokens["prompt"] += u.get("prompt_tokens", 0)
-            self.state.tokens["completion"] += u.get("completion_tokens", 0)
+        self._count_usage(usage_sink)  # orchestrator runs at tier 2
         self.state.tasks = [
             TaskRecord(task_id=t.task_id, description=t.description, assertions=t.assertions)
             for t in plan.tasks
@@ -152,9 +172,7 @@ class Mission:
         ]
         usage_sink: list[dict] = []
         revised, _ = constrained_call(self.client, msgs, PlanTask, usage_sink)
-        for u in usage_sink:
-            self.state.tokens["prompt"] += u.get("prompt_tokens", 0)
-            self.state.tokens["completion"] += u.get("completion_tokens", 0)
+        self._count_usage(usage_sink)
         task.description = revised.description
         task.assertions = revised.assertions
         task.revised = True
@@ -163,7 +181,8 @@ class Mission:
     # ── one profile session inside this mission's workdir ────────────────
     def _run(self, profile: Profile, task: str, assertions: list[Assertion],
              context: str, handoff_model, max_turns: int | None = None,
-             skills: list[str] | None = None):
+             skills: list[str] | None = None, client: Client | None = None,
+             tier: Tier = Tier.MISSION):
         order = WorkOrder(
             order_id=f"{self.state.mission_id}-{uuid.uuid4().hex[:6]}",
             task=task,
@@ -175,10 +194,10 @@ class Mission:
         toolbox = Toolbox(self.state.workdir, skills_dir=self.skills_dir,
                           allowed=list(profile.tools))
         res = run_session(profile.name, profile.system_prompt(), order, toolbox,
-                          handoff_model, client=self.client,
+                          handoff_model, client=client or self.client,
                           max_turns=max_turns or profile.max_turns,
                           thinking=profile.thinking)
-        self._count(res)
+        self._count(res, tier)
         self._save()
         return res
 
@@ -214,6 +233,52 @@ class Mission:
                         f"[{lane.name}] {item.item_id} FAILED\ncommand: {item.command}\noutput: {item.raw_output[:1500]}"
                     )
         return (len(regressions) == 0, regressions)
+
+    # ── tier 3: surgical escalation of an irreducible step ───────────────
+    def _attempt_escalation(self, task: TaskRecord, context: str) -> bool:
+        """Last resort before failing a step: hand this one step to a stronger
+        model (tier 3). Bounded — same contract, same local workdir, one attempt,
+        and the escalated work still faces the independent two-lane gate at tier 2
+        (escalation improves the attempt, it does not bypass verification). Gated
+        by a per-mission budget so tier-3 stays rare and the KPI holds. Returns
+        True and clears the task on success; leaves it for the caller otherwise."""
+        if self.escalation_client is None:
+            return False  # tier-3 not configured → behave as before
+        if len(self.state.escalations) >= self.escalation_budget:
+            self.state.notes.append(
+                f"{task.task_id}: tier-3 budget ({self.escalation_budget}) exhausted — not escalating")
+            self._save()
+            return False
+
+        trigger = f"tier-2 could not clear {task.task_id} after {task.attempts} attempt(s)"
+        record = {"task_id": task.task_id, "trigger": trigger, "cleared": None}
+        self.state.escalations.append(record)
+        self.state.notes.append(f"{task.task_id}: escalating to tier 3 — {trigger}")
+        self._save()
+
+        esc_context = context + (
+            "\n\nThis step could not be completed at the standard tier; a stronger "
+            "model is now attempting it. Honor the same contract exactly. Prior "
+            "failures to fix:\n\n" + "\n\n".join(task.regressions[-4:]))
+        work = self._run(WORKER, task.description, task.assertions, esc_context,
+                         WorkHandoff, client=self.escalation_client, tier=Tier.ESCALATION)
+        wh = WorkHandoff.model_validate(work.handoff)
+        if wh.request_attention:
+            ok, regressions = False, [f"tier-3 worker requested attention: {wh.report[:300]}"]
+        else:
+            ok, regressions = self._validate(task)  # gate stays at tier 2
+
+        record["cleared"] = ok
+        if ok:
+            task.status = "cleared"
+            task.regressions = []
+            self.state.notes.append(f"{task.task_id}: tier-3 cleared the step")
+            self._save()
+            return True
+        task.regressions.extend(regressions)
+        self.state.notes.append(f"{task.task_id}: tier-3 attempt did not clear the gate")
+        self._save()
+        return False
 
     # ── skills: select for a worker, score + synthesize on resolution ────
     def _select_skills(self, task_desc: str) -> list[str]:
@@ -271,7 +336,9 @@ class Mission:
                 if wh.request_attention:
                     task.regressions.append(f"worker requested attention: {wh.report[:500]}")
                     if task.revised:
-                        task.status = "failed"
+                        # bounded replan already spent and still blocked → tier 3
+                        if not self._attempt_escalation(task, context):
+                            task.status = "failed"
                         break
                     self.revise(task, wh.report[:800])
                     continue
@@ -283,7 +350,9 @@ class Mission:
                 task.regressions.extend(regressions)
                 self._save()
             else:
-                task.status = "failed"
+                # tier-2 attempts exhausted without clearing → one tier-3 attempt
+                if not self._attempt_escalation(task, context):
+                    task.status = "failed"
             self._save()
             if task.status == "failed":
                 self.state.status = "failed"

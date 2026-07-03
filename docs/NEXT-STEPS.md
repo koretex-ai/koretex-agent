@@ -36,6 +36,21 @@ Dispatcher model for the 35B Q4: `hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` 
 
 ## Next steps (priority order)
 
+### Phase 2 — escalation ladder top + metric — ✅ DONE (2026-07-03)
+The most foundational open piece is now built. Two halves:
+
+**Metric (`koretex_agent/tiers.py`).** `Tier` enum (0 concierge · 1 task · 2 mission · 3 escalation) + `TierLedger`: every model call is charged to the tier that made it. `escalation_rate()` = fraction of tokens above tier 2; `within_kpi()` checks it against the **≥90%-of-tokens-at-tier-≤2** floor; `report()` is what the CLI prints and the metric asserts. Wired into `MissionState.ledger` (aggregate `tokens` kept for back-compat): `_count`/`_count_usage` tag every worker/validator/orchestrator call `Tier.MISSION`, escalated work `Tier.ESCALATION`. The concierge builds a ladder-wide ledger (tier-0 routing + tier-1 worker + merged mission tier-2/3) exposed on `ConciergeResult.ledger`.
+
+**Tier-3 mechanism (`Mission._attempt_escalation`).** When tier-2 can't clear a step (attempts exhausted, or a worker still blocked after the one bounded replan), that *one step* is handed to a stronger model: **bounded contract** (same assertions), **state stays local** (same workdir), **one attempt**, and **verification stays at tier 2** (the escalated work still must pass the independent two-lane gate — escalation improves the attempt, it doesn't bypass the check). A per-mission **escalation budget** (`DEFAULT_ESCALATION_BUDGET=2`) + explicit counter/notes keep tier-3 rare. Env-gated via `escalation_client_from_env()` (`KORETEX_AGENT_ESCALATION_MODEL`/`_BASE_URL`/`_API_KEY`); unset → `escalation_client=None` → tier-3 off, missions behave exactly as before (graceful, like the embedder). CLI mission path injects it and prints the tier ledger; concierge missions get it too.
+
+**Triggers/counters at each rung:** T0→T1 (concierge `decide`), T1→T2 (tier-1 worker `done=false`/attention → mission, in `concierge.handle`), **T2→T3 (new)** — logged in `state.escalations` [{task_id, trigger, cleared}] + `state.notes`.
+
+**Tests:** `tests/test_tiers.py` (ledger math, KPI at the 0.90 boundary, merge, JSON round-trip) + `tests/test_escalation.py` (clears a stuck step, disabled-without-client behaves as before, failed escalation still fails, budget-zero blocks, KPI report shape). Faked at `run_session` so the coordinator's tier tagging + ledger run for real. Suite **96 passing**.
+
+**Demonstrated on a live model** (`scripts/probe-escalation.py`): trigger fault-injected (a stuck tier-2 worker) for determinism; everything else real — real validators fail on the missing deliverable, real qwen3:14b tier-3 worker produces `hello.py`, real validators then pass, terminal review passes. Result: status `done`, `escalations[0].cleared=true`, ledger **mission 16,773 / escalation 4,282** tokens (escalation_rate 0.20, `within_kpi=false` — correct: a 1-of-1-task forced escalation *should* breach the ≥90% floor; the metric is doing its job).
+
+**Still open (Phase 2 polish, lower priority):** (a) a live *full* mission that escalates a genuinely irreducible step end-to-end (vs the fault-injected probe) — needs a task the standard tier can't clear but the premium tier can; (b) a real network-premium or BYO-key endpoint wired for `escalation_client` in deployment; (c) a tier-1 quick-check before accepting a task result (mentioned under step 3); (d) surface the escalation-rate across many missions as the learning-loop scoreboard.
+
 ### 1. Disable thinking for worker/validator; keep it for orchestrator  — ✅ DONE (2026-07-03)
 The 35B mission burned ~288K tokens largely on Qwen3.6 thinking-mode preambles across ~12 sessions. Thinking helps the orchestrator (planning judgment) but is wasteful for the mechanical worker/validator roles.
 
@@ -134,6 +149,6 @@ Both halves of 2b are now demonstrated. 2b is complete.
 
 ## Repo state
 - Branch: `main`, pushed to `github.com/koretex-ai/koretex-agent`.
-- Tests: 84 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
+- Tests: 96 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
 - Docs: README (architecture), phase0-findings, phase1-findings, model-eval, this file.
-- Kernel code: `koretex_agent/{client,tools,session,trajectory,mission,budget,cli,schemas,embeddings}.py` + `profiles/`.
+- Kernel code: `koretex_agent/{client,tools,session,trajectory,mission,budget,cli,schemas,embeddings,tiers}.py` + `profiles/`.

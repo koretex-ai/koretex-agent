@@ -21,7 +21,8 @@ Koretex Agent is a terminal AI assistant that pays for itself. Install it and yo
 | **Mission tier** — plan → lint → work → dual-validate → review | ✅ built | deterministic coordinator; passes the exit mission *repeatedly* on 35B-A3B (Q4) over the network |
 | **Tuning** — per-profile reasoning · stop-when-done · plan-lint · cut-off-validator handling | ✅ built | [Phase 1 as built](#phase-1-as-built--tuning-a-1535b-into-disciplined-roles); consistency shown across repeated runs |
 | **Ladder tier 0** — concierge routing (chat / task / mission) + auto-escalation | ✅ built | on-device router; tier-1 shortfall escalates to a mission |
-| **Ladder tier 3** — 70B+ network / BYO-key escalation, triggers & counters | ⬜ designed | Phase 2 |
+| **Ladder tier 3** — stronger-model escalation of an irreducible step, triggers & counters | ✅ built | bounded contract, state stays local, verification stays at tier 2; per-mission escalation budget; env-gated (off = unchanged behavior) |
+| **Escalation-rate metric** — per-tier token ledger + KPI (≥90% of tokens at tier ≤2) | ✅ built | `tiers.py`; reported per mission and across the concierge ladder |
 | **Loop 3** — trajectory harvest → per-role SFT/DPO datasets | ✅ built | worker + validator + routing; gate-linked labels |
 | **Consent-gated, scrubbed export** (S3) | ✅ built | opt-in gate + secret/PII scrub *before* anything leaves the machine |
 | **Loop 2** — skills: synthesis · auto-wiring · curator | ✅ built | distil → select-into-missions → score → merge/retire; a ranked, self-gardening `SKILL.md` library |
@@ -29,7 +30,7 @@ Koretex Agent is a terminal AI assistant that pays for itself. Install it and yo
 | **One install, two faces** — installer + idle-policy daemon | ⬜ designed | Phase 3 |
 | **Nano concierge on-device / mobile** (Solana Seeker) | ⬜ designed | [docs/seeker-gtm.md](docs/seeker-gtm.md) — phone = consumer client, not a serving node |
 
-The kernel is one small Python package (`koretex_agent/`) with a green test suite including the build-failing prefix-budget gate. What is *not* yet built: the ladder's tier-3 escalation and its counters, the unified installer + idle daemon, the on-device nano concierge, and the actual weight-training run (a separate repo).
+The kernel is one small Python package (`koretex_agent/`) with a green test suite including the build-failing prefix-budget gate. What is *not* yet built: the unified installer + idle daemon, the on-device nano concierge, and the actual weight-training run (a separate repo).
 
 ## Why this exists
 
@@ -91,9 +92,9 @@ flowchart TD
 
 Design notes:
 
-- **Tier 3 receives a step, never a mission.** The big model gets a bounded contract like any worker; mission state stays local and deterministic. Premium spend stays surgical, and every tier-3 output becomes curriculum for the 15B.
+- **Tier 3 receives a step, never a mission.** ✅ *Built* (`Mission._attempt_escalation`). When tier 2 can't clear a step — attempts exhausted, or a worker still blocked after a bounded replan — that one step is handed to a stronger model under the *same* contract, in the *same* local workdir. Crucially, **verification stays at tier 2**: the escalated work still has to pass the independent two-lane gate, so escalation improves the attempt without bypassing the check. A per-mission **escalation budget** (default 2) + an explicit counter keep tier-3 rare. It's env-gated (`KORETEX_AGENT_ESCALATION_MODEL`/`_BASE_URL`/`_API_KEY`); unset → tier-3 is simply off and missions behave exactly as before. Every tier-3 output becomes curriculum for the 15B. *Demonstrated on a live model: a stuck step escalated to a real qwen3:14b that produced the deliverable, real validators cleared it, ledger split mission 16.8K / escalation 4.3K tokens (`scripts/probe-escalation.py`).*
 - **The concierge is biased hard toward escalating.** v0 ships with it doing only memory + routing (plus trivialities); its self-answer whitelist widens only as routing data accumulates. On desktop, v0 can even ship without tier 0 — it's additive.
-- **Target KPI: ≥ 90% of tokens spent at tier ≤ 2**, tracked per mission. Each brain release should push the escalation rate down; if it won't move, that's the signal to grow the standard model (~24B) rather than lean on escalation.
+- **Target KPI: ≥ 90% of tokens spent at tier ≤ 2.** ✅ *Built* (`tiers.py`, `TierLedger`). Every model call is charged to the tier that made it; `escalation_rate` = fraction of tokens above tier 2, and `within_kpi()` checks it against the 0.90 floor. Reported per mission and merged across the whole concierge ladder (tier 0 routing + tier 1 worker + tier 2/3 mission). It's the same yardstick for cost *and* learning: each brain release should push the escalation rate down; if it won't move, that's the signal to grow the standard model (~24B) rather than lean on escalation.
 - Contracts, handoffs, and verdicts crossing every tier boundary are strict JSON schemas, **enforced by grammar-constrained decoding at the serving layer** — we own the servers, so malformed output is not a failure mode. Frontier-API agents can't do this; we can.
 
 ### The mission tier (Zenith's coordinator, vendored)
@@ -250,6 +251,8 @@ koretex-agent/          ← this repo (Python) — the product
     mission.py             coordinator: plan → lint → work → dual-validate → review
     plan_lint.py           deterministic assertion lint (reject fragile contracts)
     concierge.py           tier-0 router: chat / task / mission + auto-escalation
+    tiers.py               the escalation ladder: Tier enum + TierLedger (escalation-rate KPI)
+    embeddings.py          local-embedding seam for semantic skill relevance (tier-0)
     training.py            loop 3: trajectory triples → worker/validator/routing datasets
     scrub.py · consent.py  redact secrets/PII + consent gate (before any export)
     export.py              consent-gated, scrubbed dataset export to S3
@@ -259,12 +262,12 @@ koretex-agent/          ← this repo (Python) — the product
     trajectory.py          (contract, trajectory, verdict) recorder
     cli.py                 drive a profile, a mission, or the concierge
     profiles/              worker · validator · scrutiny · orchestrator · concierge · skill-synthesizer
-  scripts/               bench-* · worker-probe · probe-cutoff-validator ·
+  scripts/               bench-* · worker-probe · probe-cutoff-validator · probe-escalation ·
                          harvest-trajectories · export-datasets · synthesize-skill · curate-skills
-  tests/                 unit + the CI prefix-budget gate + reliability/training/skill tests
+  tests/                 unit + the CI prefix-budget gate + reliability/training/skill/tier tests
   docs/                  this record, phase0/phase1 findings, model-eval, benchmarks, seeker-gtm, NEXT-STEPS
   phase0/                Phase 0 artifacts + the .venv + mission/bench workdirs
-  PLANNED                ladder/ (tier-3 escalation + counters) · coordinator/ (idle daemon) · installer/
+  PLANNED                coordinator/ (idle daemon) · installer/
 
 koretex-node/           ← separate repo (TypeScript) — unchanged, installed as a dependency
 marketplace/            ← separate repo (TypeScript) — the dispatcher; operated, not installed
@@ -278,7 +281,7 @@ marketplace/            ← separate repo (TypeScript) — the dispatcher; opera
 
 *The build has not followed the phases in order — the learning loops (Phase 4) and the tier-0 concierge (Phase 5, desktop) came early because each stage's data pointed there next. Terminal review shipped with Phase 1.*
 
-**Phase 2 — the ladder. 🟡 partial.** Terminal review ✅ (in the mission tier). Still open: tier-3 integration (network premium + BYO-key fallback), the escalation triggers + counters, and the escalation-rate metric. *Exit: a hard mission visibly escalates only its irreducible step and completes.*
+**Phase 2 — the ladder. ✅ built.** Terminal review ✅, tier-3 surgical step escalation ✅ (`Mission._attempt_escalation` — bounded contract, local state, verification stays at tier 2, per-mission budget + counter, env-gated for a network-premium or BYO-key model), explicit triggers/counters at each rung ✅, and the escalation-rate metric ✅ (`tiers.py` — per-tier token ledger + the ≥90%-at-tier-≤2 KPI, reported per mission and across the concierge ladder). *Exit met: a stuck step visibly escalates only itself to a stronger model and completes, on a live model, with a per-tier ledger to prove it (`scripts/probe-escalation.py`).* Still open (Phase 2 polish): a live full-mission run that escalates a genuinely irreducible step (vs the fault-injected probe), and a real network-premium/BYO-key endpoint wired in deployment.
 
 **Phase 3 — one install, two faces. ⬜.** Unified installer (kernel + koretex-node + models + wallet), idle-policy coordinator, balance in the status line. *Exit: fresh machine → `curl | bash` → chatting agent + visibly earning node, zero manual steps.*
 

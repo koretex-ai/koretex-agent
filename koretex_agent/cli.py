@@ -53,13 +53,18 @@ def main() -> None:
     if args.profile == "mission":
         from .mission import Mission
         from .embeddings import default_embedder
+        from .client import escalation_client_from_env
 
         # Skill relevance embeds locally (see ModelConfig.embed_base_url); falls
-        # back to keyword overlap if the embed model isn't available.
+        # back to keyword overlap if the embed model isn't available. Tier-3
+        # escalation is enabled only when KORETEX_AGENT_ESCALATION_MODEL is set.
         m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir,
-                    embedder=default_embedder(Client(cfg)))
+                    embedder=default_embedder(Client(cfg)),
+                    escalation_client=escalation_client_from_env())
         state = m.run()
         print(state.model_dump_json(indent=2))
+        print("\n── tier accounting ──")
+        print(json.dumps(state.ledger.report(), indent=2))
         return
 
     if args.profile == "concierge":
