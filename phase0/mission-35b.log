@@ -1,0 +1,148 @@
+{
+  "mission_id": "m-c8563c63",
+  "brief": "Build a Python CLI tool csv2json: cli.py reads a CSV file path argument and prints a JSON array of row objects to stdout; a --pretty flag produces indented output; quoted fields containing commas and missing values must be handled correctly; include a pytest test suite under tests/ (verify with python3 -m pytest if available, else run cli.py directly on sample files); include a README.md with usage examples. Use only the Python standard library.",
+  "workdir": "/Users/moreshkokane/code/koretex-agent/phase0/mission-35b",
+  "status": "done",
+  "tasks": [
+    {
+      "task_id": "T01",
+      "description": "Create `cli.py` using only Python standard library modules (`argparse`, `csv`, `json`). It must accept a CSV file path as a positional argument, parse rows into dictionaries using headers, and output a JSON array to stdout. Implement the `--pretty` flag for indented JSON output. Ensure robust handling of quoted fields containing commas (preserving them in values) and missing values (converting empty/missing cells or columns to empty strings `\"\"` in JSON).",
+      "assertions": [
+        {
+          "item_id": "VAL-001",
+          "statement": "The CLI runs successfully on a valid CSV file and exits with code 0.",
+          "command": "printf 'name,age\\nJohn,30\\n' > /tmp/t1.csv && python3 cli.py /tmp/t1.csv > /dev/null"
+        },
+        {
+          "item_id": "VAL-002",
+          "statement": "Quoted fields containing commas are parsed correctly as a single value in the JSON output.",
+          "command": "printf 'name,age\\n\"Smith, John\",30\\n' > /tmp/t2.csv && python3 cli.py /tmp/t2.csv | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d[0]['name'] == 'Smith, John'\""
+        },
+        {
+          "item_id": "VAL-003",
+          "statement": "Missing values (empty cells or missing columns) are converted to empty strings in the JSON output.",
+          "command": "printf 'a,b\\n1,\\n2\\n' > /tmp/t3.csv && python3 cli.py /tmp/t3.csv | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d[0]['b'] == '' and d[1]['b'] == ''\""
+        },
+        {
+          "item_id": "VAL-004",
+          "statement": "The --pretty flag produces indented JSON output.",
+          "command": "printf 'a\\n1\\n' > /tmp/t4.csv && python3 cli.py --pretty /tmp/t4.csv | python3 -c \"import sys; s=sys.stdin.read(); assert '\\n' in s and '  ' in s\""
+        }
+      ],
+      "status": "cleared",
+      "attempts": 2,
+      "revised": true,
+      "regressions": []
+    },
+    {
+      "task_id": "T02",
+      "description": "Develop a `pytest`-compatible test suite under `tests/test_cli.py`. Include tests for basic conversion, quoted commas, missing values, and the `--pretty` flag. Provide sample CSV files to allow direct CLI verification if `pytest` is unavailable, satisfying the fallback verification requirement.",
+      "assertions": [
+        {
+          "item_id": "VAL-004",
+          "statement": "[ -f tests/test_cli.py ] && grep -q 'def test_' tests/test_cli.py; echo $?",
+          "command": null
+        },
+        {
+          "item_id": "VAL-005",
+          "statement": "printf 'a,b\\n1,2\\n' > /tmp/t2_sample.csv && (python3 -m pytest tests/ --tb=short > /dev/null 2>&1 || python3 cli.py /tmp/t2_sample.csv > /dev/null 2>&1); rm -f /tmp/t2_sample.csv; echo $?",
+          "command": null
+        },
+        {
+          "item_id": "VAL-006",
+          "statement": "printf 'col1,col2\\n\"a,b\",c\\n' > tests/sample_quoted.csv && python3 cli.py tests/sample_quoted.csv | grep -q '\"b\"'; rm -f tests/sample_quoted.csv; echo $?",
+          "command": null
+        }
+      ],
+      "status": "cleared",
+      "attempts": 1,
+      "revised": false,
+      "regressions": []
+    },
+    {
+      "task_id": "T03",
+      "description": "Draft a comprehensive `README.md` covering installation, usage examples, flag descriptions (specifically `--pretty`), and notes on CSV parsing behavior. Include instructions for running the test suite via `pytest` or direct CLI execution.",
+      "assertions": [
+        {
+          "item_id": "VAL-007",
+          "statement": "[ -f README.md ] && grep -qiE '(usage|example)' README.md && grep -q -- '--pretty' README.md; echo $?",
+          "command": null
+        },
+        {
+          "item_id": "VAL-008",
+          "statement": "head -n 10 README.md | grep -qi 'python'; echo $?",
+          "command": null
+        }
+      ],
+      "status": "cleared",
+      "attempts": 1,
+      "revised": false,
+      "regressions": []
+    }
+  ],
+  "terminal_review": {
+    "order_id": "m-c8563c63-797e31",
+    "items": [
+      {
+        "item_id": "VAL-001",
+        "passed": true,
+        "command": "printf 'name,age\\nJohn,30\\n' > /tmp/t1.csv && python3 cli.py /tmp/t1.csv > /dev/null; echo \"EXIT_CODE=$?\"",
+        "raw_output": "exit=0\nEXIT_CODE=0"
+      },
+      {
+        "item_id": "VAL-002",
+        "passed": true,
+        "command": "printf 'name,age\\n\"Smith, John\",30\\n' > /tmp/t2.csv && python3 cli.py /tmp/t2.csv | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d[0]['name'] == 'Smith, John'\"",
+        "raw_output": "exit=0"
+      },
+      {
+        "item_id": "VAL-003",
+        "passed": true,
+        "command": "printf 'a,b\\n1,\\n2\\n' > /tmp/t3.csv && python3 cli.py /tmp/t3.csv | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d[0]['b'] == '' and d[1]['b'] == '', f'd[0][b]={repr(d[0].get(\\\"b\\\"))}, d[1][b]={repr(d[1].get(\\\"b\\\"))}'; print('PASS')\"",
+        "raw_output": "exit=0\nPASS"
+      },
+      {
+        "item_id": "VAL-004",
+        "passed": true,
+        "command": "printf 'a\\n1\\n' > /tmp/t4.csv && python3 cli.py --pretty /tmp/t4.csv | python3 -c \"import sys; s=sys.stdin.read(); assert '\\n' in s and '  ' in s, f'newline={chr(10) in s}, indent={\\\"  \\\" in s}'; print('PASS')\"",
+        "raw_output": "exit=0\nPASS"
+      },
+      {
+        "item_id": "VAL-004 (tests)",
+        "passed": true,
+        "command": "[ -f tests/test_cli.py ] && grep -q 'def test_' tests/test_cli.py; echo $?",
+        "raw_output": "exit=0\n0"
+      },
+      {
+        "item_id": "VAL-005",
+        "passed": true,
+        "command": "printf 'a,b\\n1,2\\n' > /tmp/t2_sample.csv && (python3 -m pytest tests/ --tb=short > /dev/null 2>&1 || python3 cli.py /tmp/t2_sample.csv > /dev/null 2>&1); rm -f /tmp/t2_sample.csv; echo $?",
+        "raw_output": "exit=0\n0"
+      },
+      {
+        "item_id": "VAL-006",
+        "passed": true,
+        "command": "printf 'col1,col2\\n\"a,b\",c\\n' > tests/sample_quoted.csv && python3 cli.py tests/sample_quoted.csv | grep -q '\"b\"'; rm -f tests/sample_quoted.csv; echo $?",
+        "raw_output": "exit=0\n0"
+      },
+      {
+        "item_id": "VAL-007",
+        "passed": true,
+        "command": "[ -f README.md ] && grep -qiE '(usage|example)' README.md && grep -q -- '--pretty' README.md; echo $?",
+        "raw_output": "exit=0\n0"
+      },
+      {
+        "item_id": "VAL-008",
+        "passed": true,
+        "command": "head -n 10 README.md | grep -qi 'python'; echo $?",
+        "raw_output": "exit=0\n0"
+      }
+    ],
+    "overall_passed": true,
+    "notes": ""
+  },
+  "tokens": {
+    "prompt": 220629,
+    "completion": 66989
+  }
+}

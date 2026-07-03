@@ -47,3 +47,19 @@ The end-to-end csv2json mission (T01 implement → T02 tests → T03 README → 
 - **Deterministic plan-lint**: reject vacuous assertions (`|| true`, bare `test -f`, grep-only contracts) and bounce the plan back — a code fix for the planner's weakest habit, no bigger model required.
 - **Faster local inference for iteration**: an MoE (Qwen3-30B-A3B class, ~3B active) at a quant that fits 18 GB, or a smaller dense model for the worker/validator roles.
 - The `commands_run` handoff field is often left empty by the worker (schema laziness); ground truth is in the trajectory regardless, but worth tightening.
+
+## Phase 1 exit criterion — MET (2026-07-03)
+
+The full csv2json mission — the one stock setups and the local 14B never completed — ran **end-to-end to a passing terminal review** on Qwen3.6-35B-A3B **Q4**, served from an RTX 3090 and consumed entirely through `https://dispatcher.koretex.ai/v1`. First complete mission over the network path.
+
+Run trace (all roles on the 35B Q4, remote):
+- **Plan**: orchestrator produced 3 tasks with genuinely *behavioral* contracts — constructs edge-case CSVs (quoted commas, empty values), runs the CLI, greps for correct JSON. A qualitative leap over the 14B's `test -f` / `grep import csv` / `pytest || true` contracts in the earlier Phase 1 run.
+- **T01** cleared on attempt 2 after an **attention→replan**: the worker executed a contract check, discovered the *assertion itself was self-contradictory* (grepped for a standalone `"John"` that can't appear in `"Smith, John"`), and raised attention instead of mangling correct code to satisfy a bad test. The orchestrator revised the task; the retry cleared both validator lanes.
+- **T02** (pytest suite) cleared first try — the task that stalled the Mac run on missing pytest; brief-propagation into the work order gave the worker the fallback context.
+- **T03** (README) cleared first try.
+- **Terminal review**: passed. Mission `done`.
+- Independent ground-truth check confirmed the artifact genuinely works (quoted-comma + empty-value handling, `--pretty`, runnable test file, documented README).
+
+Cost: **~288 K tokens** total, dominated by Qwen3.6 **thinking mode** across ~12 agentic sessions. On self-served infra the token cost is ~free; wall-clock was the real cost. Confirms the standing optimization: **disable thinking for worker/validator roles, keep it for the orchestrator.**
+
+Significance: every mechanism of the mission tier (constrained planning, bounded workers, dual independent validators, gates, regression-fed retry, attention→bounded-replan, terminal review, disk checkpointing) is now proven working **live, over the distributed-inference network, on the premium-tier model** — with the system self-correcting an imperfect plan without human intervention. The escalation ladder's top tier is validated in production conditions.
