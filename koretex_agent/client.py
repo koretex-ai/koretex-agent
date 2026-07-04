@@ -20,7 +20,9 @@ class ModelConfig:
     model: str = os.environ.get("KORETEX_AGENT_MODEL", "qwen3:14b-16k")
     api_key: str = os.environ.get("KORETEX_API_KEY", "local")
     timeout_s: float = 300.0
-    max_retries: int = 3
+    max_retries: int = 5  # transient 5xx from a busy/reloading network node are
+    # common; exponential backoff (1,2,4,8s) rides over them so one blip doesn't
+    # kill a whole mission.
     # Embeddings power tier-0 skill relevance. They run *locally* by design —
     # matching a task to a skill is a routing decision that shouldn't cost a
     # network round-trip to the work tier — so the embed endpoint defaults to
