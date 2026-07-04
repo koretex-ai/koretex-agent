@@ -145,7 +145,7 @@ class Mission:
                     ),
                 },
             ]
-            plan, _ = constrained_call(self.client, msgs, Plan, repair_sink)
+            plan, res = constrained_call(self.client, msgs, Plan, repair_sink)
 
         # Step-0 instrumentation: where planning tokens actually go (retries vs
         # repair bounce), so the next efficiency lever is chosen on data.
@@ -158,6 +158,9 @@ class Mission:
             "repair_model_calls": len(repair_sink),
             "repair_tokens": _tok(repair_sink),
             "objections": objections,
+            # the orchestrator's thinking — the only role with reasoning on; kept
+            # for the insights view (truncated so state.json stays lean).
+            "reasoning": (res.message.get("reasoning") or "").strip()[:4000],
         }
         self._count_usage(initial_sink + repair_sink)  # orchestrator runs at tier 2
         self.state.tasks = [

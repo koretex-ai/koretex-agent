@@ -35,6 +35,7 @@ class ConciergeResult(BaseModel):
     handoff: dict | None = None   # tier-1 worker handoff, if a task ran
     mission: dict | None = None   # mission state, if a mission ran (routed or escalated)
     ledger: dict | None = None    # per-tier token accounting across the whole ladder
+    tier_models: dict = {}        # tier name → the model that served it (for --verbose)
 
 
 # ── human-facing rendering: talk to it, don't read its JSON ─────────────────
@@ -42,10 +43,12 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-def render_reply(result: ConciergeResult, color: bool | None = None) -> str:
+def render_reply(result: ConciergeResult, color: bool | None = None,
+                 verbose: bool = False) -> str:
     """Format a ConciergeResult for a person: chat → just the reply; task/mission
-    → a short outcome line + a dim status footer. The raw JSON stays available
-    via --json for scripts/debugging."""
+    → a short outcome line + a dim status footer. `verbose` appends an insights
+    block (routing rationale, ladder path + escalations, orchestrator thinking,
+    per-tier→model token spend). Raw JSON stays available via --json."""
     if color is None:
         color = sys.stdout.isatty()
     dim = "\033[2m" if color else ""
@@ -55,31 +58,76 @@ def render_reply(result: ConciergeResult, color: bool | None = None) -> str:
     tok = _fmt_tokens((result.ledger or {}).get("total_tokens", 0))
 
     if result.route == "chat":
-        return result.reply or "(no reply)"
-
-    if result.route == "task":
+        head = result.reply or "(no reply)"
+    elif result.route == "task":
         wh = result.handoff or {}
         ok = wh.get("done")
         badge = f"{grn}✓{rst}" if ok else f"{red}✗{rst}"
-        out = [(wh.get("report") or "").strip() or ("done" if ok else "could not complete")]
+        parts = [(wh.get("report") or "").strip() or ("done" if ok else "could not complete")]
         if wh.get("files_touched"):
-            out.append(f"{dim}files: {', '.join(wh['files_touched'])}{rst}")
-        out.append(f"{dim}{badge} task · {tok} tokens{rst}")
-        return "\n".join(out)
+            parts.append(f"{dim}files: {', '.join(wh['files_touched'])}{rst}")
+        parts.append(f"{dim}{badge} task · {tok} tokens{rst}")
+        head = "\n".join(parts)
+    else:  # task->mission or mission
+        ms = result.mission or {}
+        tasks = ms.get("tasks", [])
+        cleared = sum(1 for t in tasks if t.get("status") == "cleared")
+        done = ms.get("status") == "done"
+        badge = f"{grn}✓{rst}" if done else f"{red}✗{rst}"
+        parts = []
+        if result.route == "task->mission":
+            parts.append(f"{dim}(a quick attempt fell short — ran it as a full mission){rst}")
+        parts.append(f"{badge} mission {ms.get('status', '?')} — {cleared}/{len(tasks)} tasks cleared")
+        extra = " · escalated to a stronger model" if ms.get("escalations") else ""
+        parts.append(f"{dim}· {tok} tokens{extra}{rst}")
+        head = "\n".join(parts)
 
-    # task->mission or mission
+    if not verbose:
+        return head
+    return head + "\n\n" + _insights(result, dim, grn, red, rst)
+
+
+_LADDER = {
+    "chat": "concierge (answered on-device)",
+    "task": "concierge → task (tier 1)",
+    "task->mission": "concierge → task (tier 1) → mission (tier 2)",
+    "mission": "concierge → mission (tier 2)",
+}
+
+
+def _insights(result: ConciergeResult, dim: str, grn: str, red: str, rst: str) -> str:
     ms = result.mission or {}
-    tasks = ms.get("tasks", [])
-    cleared = sum(1 for t in tasks if t.get("status") == "cleared")
-    done = ms.get("status") == "done"
-    badge = f"{grn}✓{rst}" if done else f"{red}✗{rst}"
-    out = []
-    if result.route == "task->mission":
-        out.append(f"{dim}(a quick attempt fell short — ran it as a full mission){rst}")
-    out.append(f"{badge} mission {ms.get('status', '?')} — {cleared}/{len(tasks)} tasks cleared")
-    extra = " · escalated to a stronger model" if ms.get("escalations") else ""
-    out.append(f"{dim}· {tok} tokens{extra}{rst}")
-    return "\n".join(out)
+    escs = ms.get("escalations") or []
+    L = [f"{dim}── how it was handled ──{rst}"]
+    L.append(f"routed: {result.route}" + (f"  {dim}(why: {result.reason}){rst}" if result.reason else ""))
+    path = _LADDER.get(result.route, result.route) + (" → escalation (tier 3)" if escs else "")
+    L.append(f"ladder: {path}")
+
+    tasks = ms.get("tasks") or []
+    if tasks:
+        marks = " · ".join(f"{t['task_id']} " + (f"{grn}✓{rst}" if t.get("status") == "cleared" else f"{red}✗{rst}")
+                           + f"({t.get('attempts', '?')})" for t in tasks)
+        L.append(f"tasks:  {marks}")
+    for e in escs:
+        L.append(f"  escalated {e.get('task_id')}: {e.get('trigger', '')} → "
+                 + ("cleared" if e.get("cleared") else "not cleared"))
+
+    thinking = (ms.get("planning") or {}).get("reasoning")
+    if thinking:
+        L.append(f"\n{dim}── thinking (orchestrator) ──{rst}")
+        L.append(f"{dim}{thinking}{rst}")
+
+    by_tier = (result.ledger or {}).get("by_tier") or {}
+    if by_tier:
+        L.append(f"\n{dim}── tokens ──{rst}")
+        for tier, toks in by_tier.items():
+            model = (result.tier_models or {}).get(tier, "")
+            label = f"{tier} · {model}" if model else tier
+            L.append(f"  {label:<42} {toks:>8,}")
+        total = (result.ledger or {}).get("total_tokens", 0)
+        kpi = "✓ within KPI" if (result.ledger or {}).get("within_kpi") else "⚠ escalation-heavy"
+        L.append(f"  {dim}{'total':<42}{rst} {total:>8,}   {kpi}")
+    return "\n".join(L)
 
 
 def decide(message: str, client: Client, usage: list[dict] | None = None) -> Route:
@@ -144,10 +192,18 @@ def handle(message: str, *, workdir: str, client: Client,
     # raw message is always a safe work order, so fall back to it.
     work = r.work.strip() or message
 
+    esc_client = escalation_client_from_env()
+
     def _mission(brief):
         from .mission import Mission
         return Mission(brief, workdir, client=work_client, skills_dir=skills_dir,
-                       escalation_client=escalation_client_from_env()).run()
+                       escalation_client=esc_client).run()
+
+    def _model_of(c):  # tier → model label for the insights view; tolerant of fakes
+        return getattr(getattr(c, "cfg", None), "model", None)
+    tier_models = {"concierge": _model_of(client), "task": _model_of(work_client),
+                   "mission": _model_of(work_client), "escalation": _model_of(esc_client)}
+    tier_models = {k: v for k, v in tier_models.items() if v}
 
     if r.decision == "chat":
         result = ConciergeResult(route="chat", reason=r.reason, reply=r.reply)
@@ -170,6 +226,7 @@ def handle(message: str, *, workdir: str, client: Client,
                                  mission=state.model_dump())
 
     result.ledger = ledger.report()
+    result.tier_models = tier_models
 
     if log_routing:
         _log_route(message, r.decision, work, result)

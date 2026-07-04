@@ -156,7 +156,8 @@ install_launcher() {
   run "cat > '$KORETEX_HOME/bin/koretex-agent' <<'LAUNCH'
 #!/usr/bin/env bash
 set -a; . \"\$HOME/.koretex-agent/config.env\"; set +a
-exec \"\$HOME/.koretex-agent/venv/bin/koretex-agent\" concierge --task \"\$*\" --workdir \"\$(pwd)\"
+flags=(); while [ \$# -gt 0 ] && [ \"\${1#-}\" != \"\$1\" ]; do flags+=(\"\$1\"); shift; done
+exec \"\$HOME/.koretex-agent/venv/bin/koretex-agent\" concierge \"\${flags[@]}\" --task \"\$*\" --workdir \"\$(pwd)\"
 LAUNCH"
   run "chmod +x '$KORETEX_HOME/bin/koretex-agent'"
   local dest="/usr/local/bin/koretex-agent"

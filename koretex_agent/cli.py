@@ -44,6 +44,8 @@ def main() -> None:
     ap.add_argument("--model")
     ap.add_argument("--base-url")
     ap.add_argument("--json", action="store_true", help="raw JSON output (default: human-readable)")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="show insights: routing, escalation ladder, thinking, per-model tokens")
     args = ap.parse_args()
 
     cfg = ModelConfig()
@@ -85,7 +87,8 @@ def main() -> None:
             print(result.model_dump_json(indent=2))
         else:
             from .concierge import render_reply
-            print(render_reply(result))
+            verbose = args.verbose or bool(os.environ.get("KORETEX_VERBOSE"))
+            print(render_reply(result, verbose=verbose))
         return
 
     profile = ALL[args.profile]

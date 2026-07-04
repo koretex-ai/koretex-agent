@@ -118,6 +118,35 @@ def test_render_no_color_has_no_ansi():
     assert "\033[" not in out
 
 
+def test_verbose_chat_shows_routing_and_ladder():
+    r = _cr(route="chat", reply="hi", reason="trivial greeting",
+            ledger={"total_tokens": 40, "by_tier": {"concierge": 40}, "within_kpi": True},
+            tier_models={"concierge": "qwen3-4b"})
+    out = cg.render_reply(r, color=False, verbose=True)
+    assert out.startswith("hi")                        # reply first
+    assert "how it was handled" in out
+    assert "routed: chat" in out and "trivial greeting" in out
+    assert "concierge (answered on-device)" in out
+    assert "concierge · qwen3-4b" in out and "40" in out  # per-model token line
+
+
+def test_verbose_mission_shows_thinking_escalation_and_models():
+    r = _cr(route="mission",
+            mission={"status": "done",
+                     "tasks": [{"task_id": "T01", "status": "cleared", "attempts": 2}],
+                     "escalations": [{"task_id": "T01", "trigger": "tier-2 exhausted", "cleared": True}],
+                     "planning": {"reasoning": "break the brief into build + verify"}},
+            ledger={"total_tokens": 21000, "by_tier": {"mission": 16000, "escalation": 5000},
+                    "within_kpi": False},
+            tier_models={"mission": "35B-A3B", "escalation": "70B"})
+    out = cg.render_reply(r, color=False, verbose=True)
+    assert "escalation (tier 3)" in out                    # ladder shows the climb
+    assert "escalated T01: tier-2 exhausted → cleared" in out
+    assert "break the brief into build + verify" in out    # the thinking
+    assert "mission · 35B-A3B" in out and "escalation · 70B" in out
+    assert "escalation-heavy" in out                        # KPI breach flagged
+
+
 def test_concierge_client_from_env(monkeypatch):
     from koretex_agent.client import concierge_client_from_env
     monkeypatch.delenv("KORETEX_CONCIERGE_MODEL", raising=False)
