@@ -23,7 +23,7 @@ CONCIERGE_MODEL_NAME="${CONCIERGE_MODEL_NAME:-qwen3-4b}"                    # se
 LLAMACPP_REPO="${LLAMACPP_REPO:-ggml-org/llama.cpp}"                       # moved from ggerganov/
 LLAMACPP_RELEASE="${LLAMACPP_RELEASE:-b9870}"                              # pinned; override to bump
 CONCIERGE_GGUF_URL="${CONCIERGE_GGUF_URL:-https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf}"
-AGENT_VERSION="${AGENT_VERSION:-0.1.6}"
+AGENT_VERSION="${AGENT_VERSION:-0.1.7}"
 AGENT_PKG="${AGENT_PKG:-https://github.com/koretex-ai/koretex-agent/releases/download/v${AGENT_VERSION}/koretex_agent-${AGENT_VERSION}-py3-none-any.whl}"
 
 DRY_RUN=0
@@ -69,7 +69,8 @@ install_agent() {
   fi
   run "python3 -m venv '$KORETEX_HOME/venv'"
   run "'$KORETEX_HOME/venv/bin/pip' install --quiet --upgrade pip"
-  run "'$KORETEX_HOME/venv/bin/pip' install --quiet '$AGENT_PKG'"
+  # [search] pulls the keyless ddgs backend so web_search works out of the box.
+  run "'$KORETEX_HOME/venv/bin/pip' install --quiet 'koretex-agent[search] @ $AGENT_PKG'"
 }
 
 # ── 3. bundled llama.cpp runtime (the local concierge server) ───────────────
