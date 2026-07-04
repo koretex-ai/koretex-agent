@@ -28,7 +28,10 @@ class ModelConfig:
     # Cap total wall-clock spent *retrying* a single call, so a flaky node can't
     # stack read-timeouts into a multi-minute hang before we give up gracefully.
     total_retry_seconds: float = float(os.environ.get("KORETEX_RETRY_BUDGET", "150"))
-    max_retries: int = 5
+    # How many attempts before giving up (within the wall-clock budget above).
+    # Raise it to ride out a persistently flaky node — drops retry cheaply.
+    # default_factory so the env var is read at instantiation, not import time.
+    max_retries: int = field(default_factory=lambda: int(os.environ.get("KORETEX_MAX_RETRIES", "6")))
     # Embeddings power tier-0 skill relevance. They run *locally* by design —
     # matching a task to a skill is a routing decision that shouldn't cost a
     # network round-trip to the work tier — so the embed endpoint defaults to
@@ -43,13 +46,16 @@ class NetworkError(RuntimeError):
 
     def __init__(self, kind: str, friendly: str, cause: Exception | None = None):
         super().__init__(friendly)
-        self.kind = kind          # down | busy | auth | request | unknown
+        self.kind = kind          # down | slow | dropped | busy | auth | request | unknown
         self.friendly = friendly
         self.cause = cause
 
 
 def _backoff(attempt: int) -> float:
-    base = float(min(2 ** attempt, 20))
+    # Cap at 8s (not 20s): most transient failures are fast connection drops that
+    # are cheap to retry, so a lower cap lets more attempts fit the wall-clock
+    # retry budget and ride out a brief flaky window instead of giving up.
+    base = float(min(2 ** attempt, 8))
     return base + random.uniform(0, base * 0.25)  # jitter avoids thundering herd
 
 
@@ -61,12 +67,19 @@ def _retry_after(resp: httpx.Response) -> float | None:
 
 
 def _classify(exc: Exception | None) -> NetworkError:
+    # Order matters: the connect group before the generic timeouts, and the
+    # protocol/read-drop group before the fallthrough. These map to *honest*,
+    # actionable messages — a dropped connection is not the same as a slow node,
+    # and the old code conflated both as "busy or slow", which misled diagnosis.
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
         return NetworkError("down", "Can't reach the Koretex network right now — check your "
                             "connection, or try again shortly.", exc)
-    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError)):
-        return NetworkError("busy", "The network is busy or slow right now (the node didn't "
-                            "respond in time). Give it a moment and try again.", exc)
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
+        return NetworkError("slow", "The node is taking too long to respond — it may be under "
+                            "heavy load. Try again, or raise KORETEX_READ_TIMEOUT for a large job.", exc)
+    if isinstance(exc, (httpx.RemoteProtocolError, httpx.ReadError, httpx.ProtocolError)):
+        return NetworkError("dropped", "The node dropped the connection mid-response — this is "
+                            "usually transient. Give it a moment and try again.", exc)
     if isinstance(exc, httpx.HTTPStatusError):
         return NetworkError("busy", f"The network had a server error (HTTP "
                             f"{exc.response.status_code}). Try again shortly.", exc)

@@ -61,12 +61,50 @@ def test_connect_error_classifies_as_down(monkeypatch):
     assert "reach the Koretex network" in ei.value.friendly
 
 
-def test_read_timeout_classifies_as_busy(monkeypatch):
+def test_read_timeout_classifies_as_slow(monkeypatch):
     c = _client(monkeypatch, [httpx.ReadTimeout("slow")] * 4)
     with pytest.raises(NetworkError) as ei:
         c.chat([{"role": "user", "content": "x"}])
-    assert ei.value.kind == "busy"
-    assert "busy or slow" in ei.value.friendly
+    assert ei.value.kind == "slow"
+    assert "KORETEX_READ_TIMEOUT" in ei.value.friendly  # actionable hint
+
+
+def test_dropped_connection_classifies_as_dropped(monkeypatch):
+    # RemoteProtocolError = the node accepted then dropped the connection
+    # mid-response — the exact failure a heavy generation on a flaky node hits.
+    c = _client(monkeypatch, [httpx.RemoteProtocolError("peer closed")] * 4)
+    with pytest.raises(NetworkError) as ei:
+        c.chat([{"role": "user", "content": "x"}])
+    assert ei.value.kind == "dropped"
+    assert "dropped the connection" in ei.value.friendly
+
+
+def test_read_error_also_classifies_as_dropped(monkeypatch):
+    c = _client(monkeypatch, [httpx.ReadError("reset")] * 4)
+    with pytest.raises(NetworkError) as ei:
+        c.chat([{"role": "user", "content": "x"}])
+    assert ei.value.kind == "dropped"
+
+
+def test_dropped_connection_is_retried_then_recovers(monkeypatch):
+    # A transient drop should be ridden out, not fatal — this is the whole point.
+    c = _client(monkeypatch, [httpx.RemoteProtocolError("drop"),
+                              httpx.RemoteProtocolError("drop"), _resp(200, OK)])
+    assert c.chat([{"role": "user", "content": "x"}]).message["content"] == "hi"
+    assert c._calls["n"] == 3
+
+
+def test_drops_retried_up_to_max_retries(monkeypatch):
+    c = _client(monkeypatch, [httpx.RemoteProtocolError("drop")] * 8, max_retries=6)
+    with pytest.raises(NetworkError) as ei:
+        c.chat([{"role": "user", "content": "x"}])
+    assert ei.value.kind == "dropped"
+    assert c._calls["n"] == 6  # honored the (raised) attempt budget
+
+
+def test_max_retries_defaults_from_env(monkeypatch):
+    monkeypatch.setenv("KORETEX_MAX_RETRIES", "9")
+    assert ModelConfig().max_retries == 9
 
 
 def test_malformed_body_is_retried_then_recovers(monkeypatch):
