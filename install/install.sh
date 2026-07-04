@@ -23,7 +23,7 @@ CONCIERGE_MODEL_NAME="${CONCIERGE_MODEL_NAME:-qwen3-4b}"                    # se
 LLAMACPP_REPO="${LLAMACPP_REPO:-ggml-org/llama.cpp}"                       # moved from ggerganov/
 LLAMACPP_RELEASE="${LLAMACPP_RELEASE:-b9870}"                              # pinned; override to bump
 CONCIERGE_GGUF_URL="${CONCIERGE_GGUF_URL:-https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf}"
-AGENT_VERSION="${AGENT_VERSION:-0.1.2}"
+AGENT_VERSION="${AGENT_VERSION:-0.1.3}"
 AGENT_PKG="${AGENT_PKG:-https://github.com/koretex-ai/koretex-agent/releases/download/v${AGENT_VERSION}/koretex_agent-${AGENT_VERSION}-py3-none-any.whl}"
 
 DRY_RUN=0
