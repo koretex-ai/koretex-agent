@@ -146,17 +146,22 @@ UNIT"
 }
 
 # ── 7. launcher on PATH ─────────────────────────────────────────────────────
+# Named `koretex-agent`, NOT `koretex` — the latter belongs to the koretex-node
+# CLI (separate installer). Two products, two commands.
 install_launcher() {
-  log "installing 'koretex' launcher"
-  run "cat > '$KORETEX_HOME/bin/koretex' <<'LAUNCH'
+  log "installing 'koretex-agent' launcher"
+  if command -v koretex-agent >/dev/null 2>&1 && [ "$(readlink "$(command -v koretex-agent)")" != "$KORETEX_HOME/bin/koretex-agent" ]; then
+    echo "   note: a 'koretex-agent' already exists at $(command -v koretex-agent); it will be shadowed by this install's PATH entry" >&2
+  fi
+  run "cat > '$KORETEX_HOME/bin/koretex-agent' <<'LAUNCH'
 #!/usr/bin/env bash
 set -a; . \"\$HOME/.koretex-agent/config.env\"; set +a
 exec \"\$HOME/.koretex-agent/venv/bin/koretex-agent\" concierge --task \"\$*\" --workdir \"\$(pwd)\"
 LAUNCH"
-  run "chmod +x '$KORETEX_HOME/bin/koretex'"
-  local dest="/usr/local/bin/koretex"
-  if [ -w "$(dirname "$dest")" ] 2>/dev/null; then run "ln -sf '$KORETEX_HOME/bin/koretex' '$dest'"
-  else run "mkdir -p '$HOME/.local/bin' && ln -sf '$KORETEX_HOME/bin/koretex' '$HOME/.local/bin/koretex'"; fi
+  run "chmod +x '$KORETEX_HOME/bin/koretex-agent'"
+  local dest="/usr/local/bin/koretex-agent"
+  if [ -w "$(dirname "$dest")" ] 2>/dev/null; then run "ln -sf '$KORETEX_HOME/bin/koretex-agent' '$dest'"
+  else run "mkdir -p '$HOME/.local/bin' && ln -sf '$KORETEX_HOME/bin/koretex-agent' '$HOME/.local/bin/koretex-agent'"; fi
 }
 
 # ── 8. verify ───────────────────────────────────────────────────────────────
@@ -164,8 +169,8 @@ verify() {
   log "verifying"
   if [ "$DRY_RUN" = 1 ]; then log "dry-run complete — flow validated, no downloads performed"; return; fi
   # concierge answers a trivial query locally (no network spend)
-  run "'$KORETEX_HOME/bin/koretex' 'what is 2+2?' | tail -5 || true"
-  log "done. Try:  koretex \"create a hello.py that prints hello\""
+  run "'$KORETEX_HOME/bin/koretex-agent' 'what is 2+2?' | tail -5 || true"
+  log "done. Try:  koretex-agent \"create a hello.py that prints hello\""
 }
 
 detect_platform

@@ -53,7 +53,7 @@ to the network and billed. See `koretex_agent.client.concierge_client_from_env`.
   tarball (`llama-b9870-bin-macos-arm64`) + `llama-server` runs, Qwen3-4B gguf
   (2.3GB) downloaded, `config.env` written, the `ai.koretex.concierge` launchd
   service came up serving `qwen3-4b` on :8080 (health ok), and
-  `koretex "what is 2+2?"` answered **locally, all tokens at the concierge tier,
+  `koretex-agent "what is 2+2?"` answered **locally, all tokens at the concierge tier,
   zero network spend**. This is the full stranger's-path (release wheel + real
   llama.cpp + real gguf), only the API key supplied.
 - **Linux (systemd) — not yet run** on a real box (control flow is `--dry-run`
