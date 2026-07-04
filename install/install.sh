@@ -20,8 +20,8 @@ DISPATCHER_URL="${DISPATCHER_URL:-https://dispatcher.koretex.ai/v1}"
 WORK_MODEL="${WORK_MODEL:-hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M}"   # network work tier
 CONCIERGE_PORT="${CONCIERGE_PORT:-8080}"
 CONCIERGE_MODEL_NAME="${CONCIERGE_MODEL_NAME:-qwen3-4b}"                    # served name
-# TODO(maintainer): pin exact release assets before going live.
-LLAMACPP_RELEASE="${LLAMACPP_RELEASE:-b4000}"                              # llama.cpp release tag
+LLAMACPP_REPO="${LLAMACPP_REPO:-ggml-org/llama.cpp}"                       # moved from ggerganov/
+LLAMACPP_RELEASE="${LLAMACPP_RELEASE:-b9870}"                              # pinned; override to bump
 CONCIERGE_GGUF_URL="${CONCIERGE_GGUF_URL:-https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf}"
 AGENT_PKG="${AGENT_PKG:-git+https://github.com/koretex-ai/koretex-agent}"   # or a pinned wheel
 
@@ -53,8 +53,10 @@ detect_platform() {
     x86_64|amd64)  ARCH=x64 ;;
     *) echo "unsupported arch: $arch" >&2; exit 1 ;;
   esac
-  LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE}-bin-${OS}-${ARCH}.zip"  # TODO: confirm naming
-  log "platform: $OS/$ARCH"
+  # llama.cpp names macOS assets "macos" and Linux assets "ubuntu"; both .tar.gz.
+  local asset_os; [ "$OS" = macos ] && asset_os=macos || asset_os=ubuntu
+  LLAMACPP_ASSET="llama-${LLAMACPP_RELEASE}-bin-${asset_os}-${ARCH}.tar.gz"
+  log "platform: $OS/$ARCH  (asset: $LLAMACPP_ASSET)"
 }
 
 # ── 2. dirs + python agent (its own venv, no system pollution) ──────────────
@@ -72,10 +74,12 @@ install_agent() {
 # ── 3. bundled llama.cpp runtime (the local concierge server) ───────────────
 fetch_runtime() {
   log "fetching llama.cpp runtime ($LLAMACPP_ASSET)"
-  local url="https://github.com/ggerganov/llama.cpp/releases/download/${LLAMACPP_RELEASE}/${LLAMACPP_ASSET}"
-  run "curl -fsSL '$url' -o '$KORETEX_HOME/runtime/llama.zip'"
-  run "unzip -oq '$KORETEX_HOME/runtime/llama.zip' -d '$KORETEX_HOME/runtime'"
-  run "rm -f '$KORETEX_HOME/runtime/llama.zip'"
+  local url="https://github.com/${LLAMACPP_REPO}/releases/download/${LLAMACPP_RELEASE}/${LLAMACPP_ASSET}"
+  run "curl -fSL '$url' -o '$KORETEX_HOME/runtime/llama.tar.gz'"
+  run "tar -xzf '$KORETEX_HOME/runtime/llama.tar.gz' -C '$KORETEX_HOME/runtime'"
+  run "rm -f '$KORETEX_HOME/runtime/llama.tar.gz'"
+  # the tarball nests the binaries (e.g. build/bin/llama-server); expose one path
+  run "ln -sf \"\$(find '$KORETEX_HOME/runtime' -name llama-server -type f | head -1)\" '$KORETEX_HOME/runtime/llama-server'"
 }
 
 # ── 4. concierge model (Qwen3-4B, ~2.5GB) ───────────────────────────────────
