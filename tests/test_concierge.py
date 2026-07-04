@@ -130,6 +130,30 @@ def test_verbose_chat_shows_routing_and_ladder():
     assert "concierge · qwen3-4b" in out and "40" in out  # per-model token line
 
 
+def test_handle_creates_dedicated_workdir_and_emits_progress(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(cg, "decide", lambda m, c, u=None: Route(decision="task", work="make a thing", reason="one file"))
+    seen = {}
+    def fake_worker(work, workdir, client, skills_dir=None):
+        seen["workdir"] = workdir
+        return _worker_result(done=True, report="did it")
+    monkeypatch.setattr(cg, "_run_worker", fake_worker)
+    events = []
+    res = cg.handle("make a thing", workdir=str(tmp_path), client=object(),
+                    log_routing=False, progress=events.append)
+    assert res.route == "task"
+    assert res.workdir.startswith(str(tmp_path)) and "make-a-thing-" in res.workdir
+    assert seen["workdir"] == res.workdir          # worker ran in the dedicated subdir
+    assert Path(res.workdir).is_dir()              # created, not the parent
+    assert "routed → task" in events and "working…" in events
+
+
+def test_render_task_shows_workdir():
+    out = cg.render_reply(_cr(route="task", handoff={"done": True, "report": "x"},
+                              workdir="/tmp/foo", ledger={"total_tokens": 10}), color=False)
+    assert "📁 /tmp/foo" in out
+
+
 def test_verbose_mission_shows_thinking_escalation_and_models():
     r = _cr(route="mission",
             mission={"status": "done",

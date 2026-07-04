@@ -71,8 +71,12 @@ class Mission:
                  skills_dir: str | None = None, *, use_skills: bool = True,
                  synthesize_on_pass: bool = True, embedder=None,
                  escalation_client: Client | None = None,
-                 escalation_budget: int = DEFAULT_ESCALATION_BUDGET):
+                 escalation_budget: int = DEFAULT_ESCALATION_BUDGET,
+                 progress=None):
         self.client = client or Client()
+        # Optional live-progress sink: called with short strings at each mission
+        # transition so a slow/silent run shows what it's doing. None = quiet.
+        self.progress = progress
         self.use_skills = use_skills
         self.synthesize_on_pass = synthesize_on_pass
         # Tier-3: a stronger model for irreducible steps. None → tier-3 off, a
@@ -105,6 +109,10 @@ class Mission:
 
     def _save(self) -> None:
         (self.dir / "state.json").write_text(self.state.model_dump_json(indent=1))
+
+    def _emit(self, msg: str) -> None:
+        if self.progress:
+            self.progress(msg)
 
     def _count(self, res, tier: Tier = Tier.MISSION) -> None:
         self.state.tokens["prompt"] += res.prompt_tokens
@@ -268,6 +276,7 @@ class Mission:
             return False
 
         trigger = f"tier-2 could not clear {task.task_id} after {task.attempts} attempt(s)"
+        self._emit(f"⚡ escalating {task.task_id} to a stronger model…")
         record = {"task_id": task.task_id, "trigger": trigger, "cleared": None}
         self.state.escalations.append(record)
         self.state.notes.append(f"{task.task_id}: escalating to tier 3 — {trigger}")
@@ -329,11 +338,15 @@ class Mission:
     # ── main loop ─────────────────────────────────────────────────────────
     def run(self) -> MissionState:
         if self.state.status == "planning":
+            self._emit("planning…")
             self.plan()
+        total = len(self.state.tasks)
+        self._emit(f"planned {total} task{'s' if total != 1 else ''}")
 
-        for task in self.state.tasks:
+        for idx, task in enumerate(self.state.tasks, 1):
             if task.status == "cleared":
                 continue
+            self._emit(f"task {idx}/{total}: {task.description[:48]}…")
             while task.attempts < MAX_ATTEMPTS_PER_TASK:
                 task.attempts += 1
                 context = f"Mission brief (global constraints apply):\n{self.state.brief}"
@@ -364,6 +377,7 @@ class Mission:
                     task.status = "cleared"
                     task.regressions = []
                     break
+                self._emit(f"task {idx}/{total}: retrying (validation caught issues)")
                 task.regressions.extend(regressions)
                 self._save()
             else:
@@ -371,15 +385,18 @@ class Mission:
                 if not self._attempt_escalation(task, context):
                     task.status = "failed"
             self._save()
+            self._emit(f"task {idx}/{total} {'✓' if task.status == 'cleared' else '✗'}")
             if task.status == "failed":
                 self.state.status = "failed"
                 self._save()
+                self._emit("mission failed")
                 self._finalize_skills()
                 return self.state
 
         # ── terminal review: fresh eyes, the whole workdir vs the brief ───
         self.state.status = "review"
         self._save()
+        self._emit("final review…")
         all_asserts = [a for t in self.state.tasks for a in t.assertions]
         review, inconclusive = self._judge(
             VALIDATOR,
@@ -400,5 +417,6 @@ class Mission:
         else:
             self.state.status = "done" if review.overall_passed else "failed"
         self._save()
+        self._emit("done" if self.state.status == "done" else "mission failed")
         self._finalize_skills()
         return self.state

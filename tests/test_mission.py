@@ -98,6 +98,18 @@ def test_exhausted_attempts_fail_the_mission(tmp_path):
     assert state.tasks[0].attempts == 3
 
 
+def test_progress_events_emitted(tmp_path):
+    m = make_mission(tmp_path)
+    events = []
+    m.progress = events.append
+    with patch.object(m, "_run", side_effect=_handoffs(DONE_W, PASS_V, PASS_V, PASS_V)):
+        m.run()
+    joined = " · ".join(events)
+    assert "planning" in joined
+    assert "task 1/1" in joined and "✓" in joined
+    assert "final review" in joined and "done" in joined
+
+
 def test_plan_records_step0_instrumentation(tmp_path):
     m = make_mission(tmp_path)
     m.plan()

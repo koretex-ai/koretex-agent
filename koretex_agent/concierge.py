@@ -10,6 +10,7 @@ wherever `work_client` points (the Koretex network in deployment)."""
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import uuid
@@ -36,6 +37,12 @@ class ConciergeResult(BaseModel):
     mission: dict | None = None   # mission state, if a mission ran (routed or escalated)
     ledger: dict | None = None    # per-tier token accounting across the whole ladder
     tier_models: dict = {}        # tier name → the model that served it (for --verbose)
+    workdir: str = ""             # where task/mission output landed (dedicated dir)
+
+
+def _slug(text: str, maxlen: int = 32) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:maxlen].rstrip("-") or "task"
 
 
 # ── human-facing rendering: talk to it, don't read its JSON ─────────────────
@@ -66,6 +73,8 @@ def render_reply(result: ConciergeResult, color: bool | None = None,
         parts = [(wh.get("report") or "").strip() or ("done" if ok else "could not complete")]
         if wh.get("files_touched"):
             parts.append(f"{dim}files: {', '.join(wh['files_touched'])}{rst}")
+        if result.workdir:
+            parts.append(f"{dim}📁 {result.workdir}{rst}")
         parts.append(f"{dim}{badge} task · {tok} tokens{rst}")
         head = "\n".join(parts)
     else:  # task->mission or mission
@@ -78,6 +87,8 @@ def render_reply(result: ConciergeResult, color: bool | None = None,
         if result.route == "task->mission":
             parts.append(f"{dim}(a quick attempt fell short — ran it as a full mission){rst}")
         parts.append(f"{badge} mission {ms.get('status', '?')} — {cleared}/{len(tasks)} tasks cleared")
+        if result.workdir:
+            parts.append(f"{dim}📁 {result.workdir}{rst}")
         extra = " · escalated to a stronger model" if ms.get("escalations") else ""
         parts.append(f"{dim}· {tok} tokens{extra}{rst}")
         head = "\n".join(parts)
@@ -179,25 +190,37 @@ def _log_route(message: str, decision: str, work: str, result: ConciergeResult,
 
 def handle(message: str, *, workdir: str, client: Client,
            work_client: Client | None = None, skills_dir=None,
-           log_routing: bool = True) -> ConciergeResult:
+           log_routing: bool = True, progress=None) -> ConciergeResult:
     """Route a user message and dispatch it. `client` runs the concierge (small,
-    local); `work_client` runs tier-1/2 work (defaults to `client`)."""
+    local); `work_client` runs tier-1/2 work (defaults to `client`). `progress`
+    (optional) is called with short strings at each step for a live view.
+    Task/mission work lands in a dedicated subdir of `workdir` (never clobbers
+    the parent), returned on the result."""
     work_client = work_client or client
     ledger = TierLedger()
     usage: list[dict] = []
     r = decide(message, client, usage)
     for u in usage:  # tier-0: the routing call itself
         ledger.add(Tier.CONCIERGE, u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
+    if progress:
+        progress(f"routed → {r.decision}")
     # Small models reliably pick the route but sometimes leave `work` blank; the
     # raw message is always a safe work order, so fall back to it.
     work = r.work.strip() or message
 
     esc_client = escalation_client_from_env()
 
+    # A dedicated per-request output dir so work never clobbers the parent dir.
+    job_dir = ""
+    if r.decision in ("task", "mission"):
+        p = Path(workdir) / f"{_slug(work)}-{uuid.uuid4().hex[:6]}"
+        p.mkdir(parents=True, exist_ok=True)
+        job_dir = str(p)
+
     def _mission(brief):
         from .mission import Mission
-        return Mission(brief, workdir, client=work_client, skills_dir=skills_dir,
-                       escalation_client=esc_client).run()
+        return Mission(brief, job_dir, client=work_client, skills_dir=skills_dir,
+                       escalation_client=esc_client, progress=progress).run()
 
     def _model_of(c):  # tier → model label for the insights view; tolerant of fakes
         return getattr(getattr(c, "cfg", None), "model", None)
@@ -208,22 +231,27 @@ def handle(message: str, *, workdir: str, client: Client,
     if r.decision == "chat":
         result = ConciergeResult(route="chat", reason=r.reason, reply=r.reply)
     elif r.decision == "task":
-        sr = _run_worker(work, workdir, work_client, skills_dir)
+        if progress:
+            progress("working…")
+        sr = _run_worker(work, job_dir, work_client, skills_dir)
         ledger.add(Tier.TASK, sr.prompt_tokens, sr.completion_tokens)
         wh = WorkHandoff.model_validate(sr.handoff)
         if wh.done and not wh.request_attention:
             result = ConciergeResult(route="task", reason=r.reason, work=work,
-                                     handoff=wh.model_dump())
+                                     handoff=wh.model_dump(), workdir=job_dir)
         else:  # tier-1 fell short → escalate to a full mission (tier 2)
+            if progress:
+                progress("quick attempt fell short → running a full mission")
             state = _mission(work)
             _merge_mission_ledger(ledger, state)
             result = ConciergeResult(route="task->mission", reason=r.reason, work=work,
-                                     handoff=wh.model_dump(), mission=state.model_dump())
+                                     handoff=wh.model_dump(), mission=state.model_dump(),
+                                     workdir=job_dir)
     else:  # mission
         state = _mission(work)
         _merge_mission_ledger(ledger, state)
         result = ConciergeResult(route="mission", reason=r.reason, work=work,
-                                 mission=state.model_dump())
+                                 mission=state.model_dump(), workdir=job_dir)
 
     result.ledger = ledger.report()
     result.tier_models = tier_models

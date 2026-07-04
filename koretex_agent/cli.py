@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import uuid
 
 from .client import Client, ModelConfig
@@ -38,7 +39,8 @@ def main() -> None:
     ap.add_argument("profile", choices=[*HANDOFFS, "mission", "concierge"])
     ap.add_argument("--task", required=True,
                     help="the work order (or, for `concierge`, the user message)")
-    ap.add_argument("--workdir", required=True)
+    ap.add_argument("--workdir", default=None,
+                    help="output dir (concierge defaults to ~/koretex-agent-work)")
     ap.add_argument("--assert", dest="asserts", action="append", default=[])
     ap.add_argument("--skills-dir")
     ap.add_argument("--model")
@@ -53,6 +55,10 @@ def main() -> None:
         cfg.model = args.model
     if args.base_url:
         cfg.base_url = args.base_url
+
+    # Only the concierge defaults its workdir; the raw profiles need one.
+    if args.profile != "concierge" and not args.workdir:
+        ap.error("--workdir is required for this profile")
 
     if args.profile == "mission":
         from .mission import Mission
@@ -76,13 +82,27 @@ def main() -> None:
         # the LOCAL concierge model (bundled llama.cpp — KORETEX_CONCIERGE_*),
         # real work is dispatched to the NETWORK (KORETEX_AGENT_* → dispatcher).
         # If no local concierge is configured, both fall back to the work client.
+        from pathlib import Path
         from .client import concierge_client_from_env
         from .concierge import handle
 
+        # Dedicated base: work lands in ~/koretex-agent-work/<slug>-<id>/, never
+        # clobbering the caller's cwd. Override with --workdir for project work.
+        base = args.workdir or str(Path.home() / "koretex-agent-work")
+        Path(base).mkdir(parents=True, exist_ok=True)
+
+        # Live progress → stderr (stdout stays clean for the reply / --json).
+        quiet = args.json or os.environ.get("KORETEX_JSON")
+        def _progress(msg):
+            if not quiet:
+                print(f"\033[2m⋯ {msg}\033[0m" if sys.stderr.isatty() else f"⋯ {msg}",
+                      file=sys.stderr, flush=True)
+
         work_client = Client(cfg)
         concierge_client = concierge_client_from_env() or work_client
-        result = handle(args.task, workdir=args.workdir, client=concierge_client,
-                        work_client=work_client, skills_dir=args.skills_dir)
+        result = handle(args.task, workdir=base, client=concierge_client,
+                        work_client=work_client, skills_dir=args.skills_dir,
+                        progress=_progress)
         if args.json or os.environ.get("KORETEX_JSON"):
             print(result.model_dump_json(indent=2))
         else:
