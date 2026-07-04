@@ -1,6 +1,6 @@
 [project]
 name = "koretex-agent"
-version = "0.1.4"
+version = "0.1.5"
 description = "Lightweight self-funding agent on the Koretex network — one kernel, four profiles"
 requires-python = ">=3.11"
 license = { text = "MIT" }

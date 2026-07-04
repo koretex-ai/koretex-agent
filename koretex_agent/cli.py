@@ -83,7 +83,7 @@ def main() -> None:
         # real work is dispatched to the NETWORK (KORETEX_AGENT_* → dispatcher).
         # If no local concierge is configured, both fall back to the work client.
         from pathlib import Path
-        from .client import concierge_client_from_env
+        from .client import NetworkError, concierge_client_from_env
         from .concierge import handle
 
         # Work runs where the user is (cwd) unless they name a dir with --workdir.
@@ -99,9 +99,15 @@ def main() -> None:
 
         work_client = Client(cfg)
         concierge_client = concierge_client_from_env() or work_client
-        result = handle(args.task, workdir=base, client=concierge_client,
-                        work_client=work_client, skills_dir=args.skills_dir,
-                        progress=_progress)
+        try:
+            result = handle(args.task, workdir=base, client=concierge_client,
+                            work_client=work_client, skills_dir=args.skills_dir,
+                            progress=_progress)
+        except NetworkError as e:
+            # Friendly, not a stack trace. Progress is checkpointed, so a mission
+            # can be resumed by re-running the same request in the same dir.
+            print(f"⚠ {e.friendly}", file=sys.stderr)
+            sys.exit(1)
         if args.json or os.environ.get("KORETEX_JSON"):
             print(result.model_dump_json(indent=2))
         else:

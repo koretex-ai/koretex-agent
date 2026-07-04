@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -19,16 +20,58 @@ class ModelConfig:
     base_url: str = os.environ.get("KORETEX_AGENT_BASE_URL", "http://localhost:11434/v1")
     model: str = os.environ.get("KORETEX_AGENT_MODEL", "qwen3:14b-16k")
     api_key: str = os.environ.get("KORETEX_API_KEY", "local")
-    timeout_s: float = 300.0
-    max_retries: int = 5  # transient 5xx from a busy/reloading network node are
-    # common; exponential backoff (1,2,4,8s) rides over them so one blip doesn't
-    # kill a whole mission.
+    # Split timeouts: fail *fast* if a node won't accept the connection (dead),
+    # but allow a bounded wait for a slow generation. A single 300s timeout meant
+    # a hung node blocked for minutes per attempt.
+    connect_timeout: float = float(os.environ.get("KORETEX_CONNECT_TIMEOUT", "10"))
+    read_timeout: float = float(os.environ.get("KORETEX_READ_TIMEOUT", "120"))
+    # Cap total wall-clock spent *retrying* a single call, so a flaky node can't
+    # stack read-timeouts into a multi-minute hang before we give up gracefully.
+    total_retry_seconds: float = float(os.environ.get("KORETEX_RETRY_BUDGET", "150"))
+    max_retries: int = 5
     # Embeddings power tier-0 skill relevance. They run *locally* by design —
     # matching a task to a skill is a routing decision that shouldn't cost a
     # network round-trip to the work tier — so the embed endpoint defaults to
     # local Ollama even when base_url points at the dispatcher.
     embed_base_url: str = os.environ.get("KORETEX_AGENT_EMBED_BASE_URL", "http://localhost:11434/v1")
     embed_model: str = os.environ.get("KORETEX_AGENT_EMBED_MODEL", "nomic-embed-text")
+
+
+class NetworkError(RuntimeError):
+    """A model call failed after exhausting retries. `kind` classifies it and
+    `friendly` is a message safe to show a user (no stack trace / URL)."""
+
+    def __init__(self, kind: str, friendly: str, cause: Exception | None = None):
+        super().__init__(friendly)
+        self.kind = kind          # down | busy | auth | request | unknown
+        self.friendly = friendly
+        self.cause = cause
+
+
+def _backoff(attempt: int) -> float:
+    base = float(min(2 ** attempt, 20))
+    return base + random.uniform(0, base * 0.25)  # jitter avoids thundering herd
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    try:
+        return min(float(resp.headers.get("retry-after", "")), 30.0)
+    except ValueError:
+        return None
+
+
+def _classify(exc: Exception | None) -> NetworkError:
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return NetworkError("down", "Can't reach the Koretex network right now — check your "
+                            "connection, or try again shortly.", exc)
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.RemoteProtocolError)):
+        return NetworkError("busy", "The network is busy or slow right now (the node didn't "
+                            "respond in time). Give it a moment and try again.", exc)
+    if isinstance(exc, httpx.HTTPStatusError):
+        return NetworkError("busy", f"The network had a server error (HTTP "
+                            f"{exc.response.status_code}). Try again shortly.", exc)
+    return NetworkError("unknown", f"The network request failed ({type(exc).__name__}). "
+                        "Try again shortly.", exc)
 
 
 @dataclass
@@ -40,7 +83,41 @@ class ChatResult:
 class Client:
     def __init__(self, cfg: ModelConfig | None = None):
         self.cfg = cfg or ModelConfig()
-        self._http = httpx.Client(timeout=self.cfg.timeout_s)
+        self._http = httpx.Client(timeout=httpx.Timeout(
+            connect=self.cfg.connect_timeout, read=self.cfg.read_timeout,
+            write=self.cfg.read_timeout, pool=self.cfg.connect_timeout))
+
+    def _request(self, url: str, body: dict, parse: Callable[[dict], Any]) -> Any:
+        """POST with classified, time-budgeted retries. Retries transient failures
+        (5xx, 429, timeouts, disconnects, malformed bodies) with jittered backoff;
+        does NOT retry auth/4xx. Raises NetworkError with a user-safe message when
+        the retry budget or count is exhausted."""
+        start = time.monotonic()
+        last: Exception | None = None
+        for attempt in range(self.cfg.max_retries):
+            try:
+                r = self._http.post(url, headers={"Authorization": f"Bearer {self.cfg.api_key}"},
+                                    json=body)
+                r.raise_for_status()
+                return parse(r.json())
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if code in (401, 403):
+                    raise NetworkError("auth", "The Koretex network rejected your API key — "
+                                       "check KORETEX_API_KEY.", e) from e
+                if code < 500 and code != 429:
+                    raise NetworkError("request", f"The network rejected the request "
+                                       f"(HTTP {code}).", e) from e
+                last = e
+                wait = _retry_after(e.response) or _backoff(attempt)
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
+                last = e
+                wait = _backoff(attempt)
+            if attempt == self.cfg.max_retries - 1 or \
+               (time.monotonic() - start) + wait > self.cfg.total_retry_seconds:
+                break
+            time.sleep(wait)
+        raise _classify(last)
 
     def chat(
         self,
@@ -67,22 +144,9 @@ class Client:
         if reasoning_effort is not None:
             body["reasoning_effort"] = reasoning_effort
 
-        last_err: Exception | None = None
-        for attempt in range(self.cfg.max_retries):
-            try:
-                r = self._http.post(
-                    f"{self.cfg.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.cfg.api_key}"},
-                    json=body,
-                )
-                r.raise_for_status()
-                data = r.json()
-                choice = data["choices"][0]
-                return ChatResult(message=choice["message"], usage=data.get("usage", {}))
-            except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
-                last_err = e
-                time.sleep(2**attempt)
-        raise RuntimeError(f"chat failed after {self.cfg.max_retries} attempts: {last_err}")
+        return self._request(
+            f"{self.cfg.base_url}/chat/completions", body,
+            lambda d: ChatResult(message=d["choices"][0]["message"], usage=d.get("usage", {})))
 
     def embed(self, inputs: list[str]) -> list[list[float]]:
         """Batch-embed strings via the OpenAI-compatible /embeddings endpoint
@@ -90,23 +154,11 @@ class Client:
         vector per input, in order. Raises on failure so callers can fall back."""
         if not inputs:
             return []
-        last_err: Exception | None = None
-        for attempt in range(self.cfg.max_retries):
-            try:
-                r = self._http.post(
-                    f"{self.cfg.embed_base_url}/embeddings",
-                    headers={"Authorization": f"Bearer {self.cfg.api_key}"},
-                    json={"model": self.cfg.embed_model, "input": inputs},
-                )
-                r.raise_for_status()
-                data = r.json()
-                # OpenAI returns data sorted by "index"; sort defensively.
-                rows = sorted(data["data"], key=lambda d: d.get("index", 0))
-                return [row["embedding"] for row in rows]
-            except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
-                last_err = e
-                time.sleep(2**attempt)
-        raise RuntimeError(f"embed failed after {self.cfg.max_retries} attempts: {last_err}")
+        return self._request(
+            f"{self.cfg.embed_base_url}/embeddings",
+            {"model": self.cfg.embed_model, "input": inputs},
+            # OpenAI returns data sorted by "index"; sort defensively.
+            lambda d: [row["embedding"] for row in sorted(d["data"], key=lambda x: x.get("index", 0))])
 
 
 def concierge_client_from_env() -> "Client | None":
