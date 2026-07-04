@@ -9,3 +9,7 @@ phase0/bench/
 *.log
 phase0/datasets/
 phase0/export/
+
+# build artifacts
+dist/
+*.egg-info/
