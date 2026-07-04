@@ -45,12 +45,17 @@ to the network and billed. See `koretex_agent.client.concierge_client_from_env`.
 - **`AGENT_PKG`** — publish a wheel / tag instead of `git+https` for reproducible installs.
 - **Wallet/key provisioning** — the installer accepts an existing `--key`; the account-creation + buy-credits + balance-in-status-line flow is a separate backend concern (not yet wired here).
 
-## Not yet validated on a real machine
+## Validation status
 
-The `--dry-run` validates the full control flow (platform detection, config,
-service + launcher generation). The multi-GB downloads (llama.cpp binary, gguf)
-and the launchd/systemd registration need a real target machine to validate
-end-to-end — do this before publishing to `get.koretex.ai`.
+- **macOS arm64 — validated end-to-end (2026-07-04).** Real run on an M3 Pro:
+  runtime tarball (`llama-b9870-bin-macos-arm64`) downloaded + `llama-server`
+  runs; Qwen3-4B gguf (2.3GB) downloaded; `config.env` written; the
+  `ai.koretex.concierge` launchd service came up serving `qwen3-4b` on :8080
+  (health ok); `koretex "what is 2+2?"` answered **locally, 447 tokens all at
+  the concierge tier, zero network spend**.
+- **Linux (systemd) — not yet run** on a real box (control flow is `--dry-run`
+  validated; asset naming shares the same `ubuntu`/`tar.gz` convention).
+- **Windows** — deferred to the desktop app.
 
 ## Later
 
