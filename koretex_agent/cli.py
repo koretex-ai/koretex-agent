@@ -14,6 +14,7 @@ import os
 import sys
 import uuid
 
+from .artifacts import file_url, should_auto_open
 from .client import Client, ModelConfig
 from .profiles import ALL
 from .schemas import Assertion, ValidateHandoff, WorkHandoff, WorkOrder
@@ -21,6 +22,23 @@ from .session import run_session
 from .tools import Toolbox
 
 HANDOFFS = {"worker": WorkHandoff, "validator": ValidateHandoff, "scrutiny": ValidateHandoff}
+
+
+def _open_in_browser(path: str) -> None:
+    """Best-effort launch of the default browser for a web deliverable. Never
+    raises — on any failure the user just clicks the printed file:// link."""
+    import subprocess
+
+    url = file_url(path)
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform.startswith("win"):
+            os.startfile(url)  # type: ignore[attr-defined]  # noqa: S606
+        else:
+            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def parse_assert(spec: str) -> Assertion:
@@ -114,6 +132,10 @@ def main() -> None:
             from .concierge import render_reply
             verbose = args.verbose or bool(os.environ.get("KORETEX_VERBOSE"))
             print(render_reply(result, verbose=verbose))
+            # Open the browser artifact for an interactive user (KORETEX_NO_OPEN
+            # opts out); the file:// link is printed either way.
+            if result.artifact and should_auto_open(sys.stdout.isatty()):
+                _open_in_browser(result.artifact)
         return
 
     profile = ALL[args.profile]

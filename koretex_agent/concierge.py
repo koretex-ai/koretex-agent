@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .artifacts import detect_primary_artifact, file_url
 from .client import Client, escalation_client_from_env
 from .profiles import CONCIERGE, WORKER
 from .schemas import Route, WorkHandoff, WorkOrder
@@ -37,6 +38,7 @@ class ConciergeResult(BaseModel):
     ledger: dict | None = None    # per-tier token accounting across the whole ladder
     tier_models: dict = {}        # tier name → the model that served it (for --verbose)
     workdir: str = ""             # where task/mission output landed
+    artifact: str = ""            # absolute path to the browser-openable deliverable, if any
 
 
 # ── human-facing rendering: talk to it, don't read its JSON ─────────────────
@@ -67,7 +69,9 @@ def render_reply(result: ConciergeResult, color: bool | None = None,
         parts = [(wh.get("report") or "").strip() or ("done" if ok else "could not complete")]
         if wh.get("files_touched"):
             parts.append(f"{dim}files: {', '.join(wh['files_touched'])}{rst}")
-        if result.workdir:
+        if result.artifact:
+            parts.append(f"{grn}▶ open in your browser:{rst} {file_url(result.artifact)}")
+        elif result.workdir:
             parts.append(f"{dim}📁 {result.workdir}{rst}")
         parts.append(f"{dim}{badge} task · {tok} tokens{rst}")
         head = "\n".join(parts)
@@ -81,7 +85,9 @@ def render_reply(result: ConciergeResult, color: bool | None = None,
         if result.route == "task->mission":
             parts.append(f"{dim}(a quick attempt fell short — ran it as a full mission){rst}")
         parts.append(f"{badge} mission {ms.get('status', '?')} — {cleared}/{len(tasks)} tasks cleared")
-        if result.workdir:
+        if result.artifact:
+            parts.append(f"{grn}▶ open in your browser:{rst} {file_url(result.artifact)}")
+        elif result.workdir:
             parts.append(f"{dim}📁 {result.workdir}{rst}")
         extra = " · escalated to a stronger model" if ms.get("escalations") else ""
         parts.append(f"{dim}· {tok} tokens{extra}{rst}")
@@ -251,6 +257,15 @@ def handle(message: str, *, workdir: str, client: Client,
 
     result.ledger = ledger.report()
     result.tier_models = tier_models
+
+    # Preview: point the user at the browser-runnable deliverable (the CLI opens
+    # it for them on a TTY). Prefer the run's own touched files so a pre-existing
+    # .html in the user's cwd is never mistaken for the output; scan otherwise.
+    if job_dir and r.decision in ("task", "mission"):
+        touched = (result.handoff or {}).get("files_touched")
+        art = detect_primary_artifact(job_dir, touched=touched)
+        if art:
+            result.artifact = str(art)
 
     if log_routing:
         _log_route(message, r.decision, work, result)
