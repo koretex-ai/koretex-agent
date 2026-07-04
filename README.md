@@ -269,7 +269,8 @@ koretex-agent/          ← this repo (Python) — the product
   tests/                 unit + the CI prefix-budget gate + reliability/training/skill/tier tests
   docs/                  this record, phase0/phase1 findings, model-eval, benchmarks, seeker-gtm, NEXT-STEPS
   phase0/                Phase 0 artifacts + the .venv + mission/bench workdirs
-  PLANNED                coordinator/ (idle daemon) · installer/
+  install/               consumer installer (curl|bash, bundled llama.cpp + local concierge)
+  PLANNED                desktop/mobile app (wraps the consumer component); idle daemon lives in koretex-node
 
 koretex-node/           ← separate repo (TypeScript) — unchanged, installed as a dependency
 marketplace/            ← separate repo (TypeScript) — the dispatcher; operated, not installed
@@ -285,7 +286,7 @@ marketplace/            ← separate repo (TypeScript) — the dispatcher; opera
 
 **Phase 2 — the ladder. ✅ built.** Terminal review ✅, tier-3 surgical step escalation ✅ (`Mission._attempt_escalation` — bounded contract, local state, verification stays at tier 2, per-mission budget + counter, env-gated for a network-premium or BYO-key model), explicit triggers/counters at each rung ✅, and the escalation-rate metric ✅ (`tiers.py` — per-tier token ledger + the ≥90%-at-tier-≤2 KPI, reported per mission and across the concierge ladder). *Exit met: a stuck step visibly escalates only itself to a stronger model and completes, on a live model, with a per-tier ledger to prove it (`scripts/probe-escalation.py`).* Still open (Phase 2 polish): a live full-mission run that escalates a genuinely irreducible step (vs the fault-injected probe), and a real network-premium/BYO-key endpoint wired in deployment.
 
-**Phase 3 — one install, two faces. ⬜.** Unified installer (kernel + koretex-node + models + wallet), idle-policy coordinator, balance in the status line. *Exit: fresh machine → `curl | bash` → chatting agent + visibly earning node, zero manual steps.*
+**Phase 3 — two faces, two installers. 🟡 consumer MVP built.** By design the two faces are **separate installers** (code un-commingled, share only the wallet/account): the **consumer** (`install/install.sh`, this repo) — concierge on a bundled local llama.cpp + work → network + wallet, runs on any device; and the **provider** (separate `koretex-node` repo) — serves the 35B, **35B-or-nothing** (no dense-14B rung), 24GB+ boxes only, also installable standalone. The network decouples agent quality from local hardware, so a phone/laptop gets 35B-quality work by consuming from the network and paying credits. ✅ *Built (consumer):* the two-client concierge topology (`concierge_client_from_env` — local routing / network work) and `install/install.sh` (curl|bash, bundled llama.cpp + Qwen3-4B, launchd/systemd service, `--dry-run`-validated). *Still open:* pin the real download assets + validate the GB downloads on a target machine; wallet/account provisioning + balance in status line; the idle-policy daemon lives in `koretex-node`; the desktop/mobile (Seeker) app wraps this same consumer component.
 
 **Phase 4 — the learning loops. 🟡 mostly built.** ✅ trajectory harvest → worker/validator/routing SFT+DPO datasets; ✅ consent-gated scrubbed export (S3); ✅ skill-synthesizer + win/loss ledger. Still open: a background skill curator, and the first post-trained 15B release (the training run is a separate GPU-box repo). *Exit: brain v1 beats its base model on the fixed mission suite and lowers the escalation rate.*
 
