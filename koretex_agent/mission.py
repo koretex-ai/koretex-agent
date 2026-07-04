@@ -25,7 +25,7 @@ from .schemas import (
     WorkHandoff,
     WorkOrder,
 )
-from .session import constrained_call, run_session
+from .session import _strip_reasoning, constrained_call, run_session
 from .tiers import Tier, TierLedger
 from .tools import Toolbox
 
@@ -59,6 +59,7 @@ class MissionState(BaseModel):
     terminal_review: dict | None = None
     tokens: dict[str, int] = {"prompt": 0, "completion": 0}  # aggregate (back-compat)
     ledger: TierLedger = TierLedger()  # per-tier token accounting → escalation-rate KPI
+    planning: dict = {}  # step-0 instrumentation: initial vs repair model calls + tokens
     escalations: list[dict] = []  # tier-3 escalations: {task_id, trigger, cleared}
     notes: list[str] = []  # reliability events (e.g. inconclusive validator lanes)
     skills_used: list[str] = []  # catalog skills injected into workers this mission
@@ -124,16 +125,17 @@ class Mission:
             {"role": "system", "content": ORCHESTRATOR.system_prompt()},
             {"role": "user", "content": f"Brief:\n{self.state.brief}\n\nEmit the Plan as JSON."},
         ]
-        usage_sink: list[dict] = []
-        plan, res = constrained_call(self.client, msgs, Plan, usage_sink)
+        initial_sink: list[dict] = []
+        plan, res = constrained_call(self.client, msgs, Plan, initial_sink)
 
         # Deterministic plan-lint: reject fragile/vacuous assertions in code
         # before a worker burns turns on them. One repair pass — the validators
         # are the real gate, so a still-dirty plan proceeds rather than blocking.
         objections = lint_plan(plan)
+        repair_sink: list[dict] = []
         if objections:
             msgs += [
-                res.message,
+                _strip_reasoning(res.message),  # re-send the plan, not its reasoning (~5K)
                 {
                     "role": "user",
                     "content": (
@@ -143,9 +145,21 @@ class Mission:
                     ),
                 },
             ]
-            plan, _ = constrained_call(self.client, msgs, Plan, usage_sink)
+            plan, _ = constrained_call(self.client, msgs, Plan, repair_sink)
 
-        self._count_usage(usage_sink)  # orchestrator runs at tier 2
+        # Step-0 instrumentation: where planning tokens actually go (retries vs
+        # repair bounce), so the next efficiency lever is chosen on data.
+        def _tok(sink):
+            return sum(u.get("prompt_tokens", 0) + u.get("completion_tokens", 0) for u in sink)
+        self.state.planning = {
+            "initial_model_calls": len(initial_sink),  # 1 + validation retries
+            "initial_tokens": _tok(initial_sink),
+            "repair_fired": bool(objections),
+            "repair_model_calls": len(repair_sink),
+            "repair_tokens": _tok(repair_sink),
+            "objections": objections,
+        }
+        self._count_usage(initial_sink + repair_sink)  # orchestrator runs at tier 2
         self.state.tasks = [
             TaskRecord(task_id=t.task_id, description=t.description, assertions=t.assertions)
             for t in plan.tasks

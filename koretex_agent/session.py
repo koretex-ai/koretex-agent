@@ -7,6 +7,7 @@ mode we accept from the serving layer."""
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, ValidationError
 
@@ -42,7 +43,7 @@ def constrained_call(
         except ValidationError as e:
             last = e
             msgs = msgs + [
-                res.message,
+                _strip_reasoning(res.message),  # don't re-pay for the prior reasoning
                 {"role": "user", "content": f"Invalid {model_cls.__name__}: {e}. Emit corrected JSON only."},
             ]
     raise RuntimeError(f"model failed to produce valid {model_cls.__name__}: {last}")
@@ -62,6 +63,22 @@ class SessionResult(BaseModel):
 def strip_thinking(msg: dict) -> dict:
     """Drop reasoning fields before appending to history — they'd blow the budget."""
     return {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")}
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(msg: dict) -> dict:
+    """Drop a prior response's reasoning before re-sending it as context (a retry
+    or a repair bounce). The model regenerates reasoning fresh each call, so
+    re-sending the old block is pure prompt-token waste — on a thinking-on
+    orchestrator it's ~5K tokens per re-send. Handles both shapes: a separate
+    `reasoning` field (dropped by keeping only role/content/tool_calls) and inline
+    <think>…</think> in content."""
+    m = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")}
+    if isinstance(m.get("content"), str):
+        m["content"] = _THINK_RE.sub("", m["content"])
+    return m
 
 
 # Keep the most recent N *turns* in full on the wire; elide the bulky content of

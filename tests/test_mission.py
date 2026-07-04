@@ -98,6 +98,16 @@ def test_exhausted_attempts_fail_the_mission(tmp_path):
     assert state.tasks[0].attempts == 3
 
 
+def test_plan_records_step0_instrumentation(tmp_path):
+    m = make_mission(tmp_path)
+    m.plan()
+    p = m.state.planning
+    assert p["initial_model_calls"] == 1        # valid plan first try, no retry
+    assert p["initial_tokens"] == 150           # 100 prompt + 50 completion (mock)
+    assert isinstance(p["repair_fired"], bool)  # lint decision recorded
+    assert "repair_tokens" in p
+
+
 def test_state_checkpoints_and_resumes(tmp_path):
     m = make_mission(tmp_path)
     with patch.object(m, "_run", side_effect=_handoffs(DONE_W, PASS_V, PASS_V, PASS_V)):

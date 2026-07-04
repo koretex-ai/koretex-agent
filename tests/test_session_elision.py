@@ -3,7 +3,26 @@ cost. Elides BOTH stale tool results (reader/validator cost) and stale assistant
 tool_call arguments, chiefly write_file content (writer/worker cost)."""
 import json
 
-from koretex_agent.session import _elide_stale_context
+from koretex_agent.session import _elide_stale_context, _strip_reasoning
+
+
+def test_strip_reasoning_drops_separate_field():
+    # the 35B returns reasoning in a separate `reasoning` field
+    m = {"role": "assistant", "content": '{"tasks": []}', "reasoning": "long chain of thought " * 50}
+    out = _strip_reasoning(m)
+    assert "reasoning" not in out
+    assert out["content"] == '{"tasks": []}'  # the answer is preserved
+
+
+def test_strip_reasoning_drops_inline_think_tags():
+    m = {"role": "assistant", "content": "<think>pondering...</think>\nfinal answer"}
+    assert _strip_reasoning(m)["content"] == "final answer"
+
+
+def test_strip_reasoning_keeps_tool_calls():
+    m = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}], "reasoning": "x"}
+    out = _strip_reasoning(m)
+    assert out["tool_calls"] == [{"id": "c1"}] and "reasoning" not in out
 
 BIG = "x" * 500  # > _ELIDE_MIN (200) → elision-eligible
 
