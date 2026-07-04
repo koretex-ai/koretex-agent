@@ -10,6 +10,7 @@ wherever `work_client` points (the Koretex network in deployment)."""
 from __future__ import annotations
 
 import json
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -34,6 +35,51 @@ class ConciergeResult(BaseModel):
     handoff: dict | None = None   # tier-1 worker handoff, if a task ran
     mission: dict | None = None   # mission state, if a mission ran (routed or escalated)
     ledger: dict | None = None    # per-tier token accounting across the whole ladder
+
+
+# ── human-facing rendering: talk to it, don't read its JSON ─────────────────
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def render_reply(result: ConciergeResult, color: bool | None = None) -> str:
+    """Format a ConciergeResult for a person: chat → just the reply; task/mission
+    → a short outcome line + a dim status footer. The raw JSON stays available
+    via --json for scripts/debugging."""
+    if color is None:
+        color = sys.stdout.isatty()
+    dim = "\033[2m" if color else ""
+    grn = "\033[32m" if color else ""
+    red = "\033[31m" if color else ""
+    rst = "\033[0m" if color else ""
+    tok = _fmt_tokens((result.ledger or {}).get("total_tokens", 0))
+
+    if result.route == "chat":
+        return result.reply or "(no reply)"
+
+    if result.route == "task":
+        wh = result.handoff or {}
+        ok = wh.get("done")
+        badge = f"{grn}✓{rst}" if ok else f"{red}✗{rst}"
+        out = [(wh.get("report") or "").strip() or ("done" if ok else "could not complete")]
+        if wh.get("files_touched"):
+            out.append(f"{dim}files: {', '.join(wh['files_touched'])}{rst}")
+        out.append(f"{dim}{badge} task · {tok} tokens{rst}")
+        return "\n".join(out)
+
+    # task->mission or mission
+    ms = result.mission or {}
+    tasks = ms.get("tasks", [])
+    cleared = sum(1 for t in tasks if t.get("status") == "cleared")
+    done = ms.get("status") == "done"
+    badge = f"{grn}✓{rst}" if done else f"{red}✗{rst}"
+    out = []
+    if result.route == "task->mission":
+        out.append(f"{dim}(a quick attempt fell short — ran it as a full mission){rst}")
+    out.append(f"{badge} mission {ms.get('status', '?')} — {cleared}/{len(tasks)} tasks cleared")
+    extra = " · escalated to a stronger model" if ms.get("escalations") else ""
+    out.append(f"{dim}· {tok} tokens{extra}{rst}")
+    return "\n".join(out)
 
 
 def decide(message: str, client: Client, usage: list[dict] | None = None) -> Route:

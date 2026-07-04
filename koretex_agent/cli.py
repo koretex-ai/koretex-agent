@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 
 from .client import Client, ModelConfig
@@ -42,6 +43,7 @@ def main() -> None:
     ap.add_argument("--skills-dir")
     ap.add_argument("--model")
     ap.add_argument("--base-url")
+    ap.add_argument("--json", action="store_true", help="raw JSON output (default: human-readable)")
     args = ap.parse_args()
 
     cfg = ModelConfig()
@@ -79,7 +81,11 @@ def main() -> None:
         concierge_client = concierge_client_from_env() or work_client
         result = handle(args.task, workdir=args.workdir, client=concierge_client,
                         work_client=work_client, skills_dir=args.skills_dir)
-        print(result.model_dump_json(indent=2))
+        if args.json or os.environ.get("KORETEX_JSON"):
+            print(result.model_dump_json(indent=2))
+        else:
+            from .concierge import render_reply
+            print(render_reply(result))
         return
 
     profile = ALL[args.profile]

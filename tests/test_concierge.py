@@ -86,6 +86,38 @@ def test_concierge_within_prefix_budget():
     assert profile_prefix_tokens(CONCIERGE) <= CONCIERGE.prefix_budget_tokens
 
 
+# ── human-facing rendering ──────────────────────────────────────────────────
+def _cr(**kw):
+    return cg.ConciergeResult(**kw)
+
+
+def test_render_chat_is_just_the_reply():
+    out = cg.render_reply(_cr(route="chat", reply="hi there", ledger={"total_tokens": 40}), color=False)
+    assert out == "hi there"  # no JSON, no footer — just the words
+
+
+def test_render_task_shows_report_and_status():
+    r = _cr(route="task", handoff={"done": True, "report": "wrote calc.py", "files_touched": ["calc.py"]},
+            ledger={"total_tokens": 1200})
+    out = cg.render_reply(r, color=False)
+    assert "wrote calc.py" in out
+    assert "files: calc.py" in out
+    assert "✓ task · 1.2k tokens" in out
+
+
+def test_render_mission_summarizes():
+    r = _cr(route="mission", mission={"status": "done",
+            "tasks": [{"status": "cleared"}, {"status": "cleared"}]}, ledger={"total_tokens": 50000})
+    out = cg.render_reply(r, color=False)
+    assert "mission done — 2/2 tasks cleared" in out
+    assert "50.0k tokens" in out
+
+
+def test_render_no_color_has_no_ansi():
+    out = cg.render_reply(_cr(route="chat", reply="x"), color=False)
+    assert "\033[" not in out
+
+
 def test_concierge_client_from_env(monkeypatch):
     from koretex_agent.client import concierge_client_from_env
     monkeypatch.delenv("KORETEX_CONCIERGE_MODEL", raising=False)
