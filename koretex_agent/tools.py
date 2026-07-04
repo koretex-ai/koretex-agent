@@ -67,6 +67,33 @@ TOOL_SCHEMAS: dict[str, dict] = {
             },
         },
     },
+    "web_search": {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current/external info. Returns ranked title, url, snippet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "web_fetch": {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return its readable text (HTML stripped, truncated).",
+            "parameters": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            },
+        },
+    },
 }
 
 MAX_OUTPUT_CHARS = 8_000
@@ -75,10 +102,14 @@ MAX_OUTPUT_CHARS = 8_000
 class Toolbox:
     """Executes tool calls inside one workdir. One instance per session."""
 
-    def __init__(self, workdir: str, skills_dir: str | None = None, allowed: list[str] | None = None):
+    def __init__(self, workdir: str, skills_dir: str | None = None, allowed: list[str] | None = None,
+                 search_backend=None):
         self.workdir = Path(workdir).resolve()
         self.skills_dir = Path(skills_dir).resolve() if skills_dir else None
         self.allowed = allowed or list(TOOL_SCHEMAS)
+        # Resolved lazily on first web_search so a non-research session pays
+        # nothing (and env selection happens at call time). Injectable for tests.
+        self._search_backend = search_backend
 
     def schemas(self) -> list[dict]:
         return [TOOL_SCHEMAS[n] for n in self.allowed]
@@ -133,3 +164,21 @@ class Toolbox:
         if not p.exists():
             return f"error: unknown skill {name}"
         return p.read_text()
+
+    def _backend(self):
+        if self._search_backend is None:
+            from .search import backend_from_env
+            self._search_backend = backend_from_env()
+        return self._search_backend
+
+    def _t_web_search(self, query: str, max_results: int = 5) -> str:
+        n = max(1, min(int(max_results), 10))
+        results = self._backend().search(query, max_results=n)
+        if not results:
+            return "no results"
+        return "\n".join(f"{i}. {r.title}\n   {r.url}\n   {r.snippet}"
+                         for i, r in enumerate(results, 1))
+
+    def _t_web_fetch(self, url: str) -> str:
+        from .search import fetch_url
+        return fetch_url(url)

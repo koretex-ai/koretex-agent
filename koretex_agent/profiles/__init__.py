@@ -26,7 +26,8 @@ class Profile:
 
 WORKER = Profile(
     name="worker",
-    tools=("run_shell", "read_file", "write_file", "search_files", "use_skill"),
+    tools=("run_shell", "read_file", "write_file", "search_files", "use_skill",
+           "web_search", "web_fetch"),
     prefix_budget_tokens=3_000,
     max_turns=20,
     thinking=False,
