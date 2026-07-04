@@ -36,6 +36,18 @@ Dispatcher model for the 35B Q4: `hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` 
 
 ## Next steps (priority order)
 
+### Consumer product (v0.1.0 → v0.1.5, all released) + what's left — resume here (2026-07-04)
+
+The consumer face is built and shipping as versioned GH-release wheels (`install/install.sh` pulls them). Done: two-client concierge (local routing / network work), curl|bash installer (bundled llama.cpp + Qwen3-4B, launchd/systemd, validated end-to-end from scratch on macOS-arm64), human-readable output, `-v` insights (routing + escalation ladder + orchestrator thinking + per-model tokens), live progress (`⋯` to stderr), output-to-cwd, routing fix (questions → chat, not scripts), and **network reliability slice 1** (`client.py`: split connect/read timeouts + retry-time budget, classified retries that don't retry 4xx, `NetworkError` with friendly messages). Command is **`koretex-agent "<msg>"`** (not `koretex` — collides with the node CLI). 125 tests.
+
+**Remaining, prioritized:**
+1. **★ Web-friendly artifacts (top priority).** Today "create a game/app" emits **Python/shell scripts** a normal user can't easily run on their device. Default deliverables should be **browser-runnable / self-contained** (HTML+JS that opens in a browser, no local runtime or deps) so the output is usable. Needs orchestrator/worker prompts to prefer a web-runnable artifact + an open/preview step. Feeds the eventual **Electron desktop app** (which hosts/previews these).
+2. **Web search + deep research + own server.** `web_search`/`web_fetch` tools, pluggable backend (keyless `ddgs` default; Brave/Tavily BYO-key); deep-research flow; **own search server = self-hosted SearXNG**, ideally a Koretex-network service (decentralized, no 3rd-party keys).
+3. **Wallet / balance.** Account + buy-credits + balance in the status line (installer already takes `--key`; backend flow is separate).
+4. **Network reliability slices 2-6** (slice 1 done): **mission-level resume on transient failure** (highest next — state checkpoints already; make a mid-mission `NetworkError` resumable, not fatal), streaming + stall detection, circuit breaker + `/healthz` preflight, fallback tier, latency/failure observability. (Node/dispatcher *stability* is separate infra — the 3090 was overloaded/flaky all day 2026-07-04.)
+5. **Electron app** (wraps this consumer component); Linux(systemd) real-box install; host `install.sh` at get.koretex.ai; Windows via the app.
+6. **Deferred/blocked:** tier-3 capability-gap test (needs a BYO-key Larger model); Loop-3 GPU training → brain v1 (separate repo).
+
 ### Phase 2 — escalation ladder top + metric — ✅ DONE (2026-07-03)
 The most foundational open piece is now built. Two halves:
 
@@ -167,6 +179,6 @@ Both halves of 2b are now demonstrated. 2b is complete.
 
 ## Repo state
 - Branch: `main`, pushed to `github.com/koretex-ai/koretex-agent`.
-- Tests: 107 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
+- Tests: 125 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
 - Docs: README (architecture), phase0-findings, phase1-findings, model-eval, this file.
 - Kernel code: `koretex_agent/{client,tools,session,trajectory,mission,budget,cli,schemas,embeddings,tiers}.py` + `profiles/`.
