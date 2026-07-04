@@ -68,13 +68,17 @@ def main() -> None:
         return
 
     if args.profile == "concierge":
-        # --task carries the user message. In deployment the concierge model is a
-        # small local one; here the same client serves routing and work unless a
-        # separate concierge model is configured.
+        # --task carries the user message. The consumer topology: routing runs on
+        # the LOCAL concierge model (bundled llama.cpp — KORETEX_CONCIERGE_*),
+        # real work is dispatched to the NETWORK (KORETEX_AGENT_* → dispatcher).
+        # If no local concierge is configured, both fall back to the work client.
+        from .client import concierge_client_from_env
         from .concierge import handle
 
-        result = handle(args.task, workdir=args.workdir, client=Client(cfg),
-                        skills_dir=args.skills_dir)
+        work_client = Client(cfg)
+        concierge_client = concierge_client_from_env() or work_client
+        result = handle(args.task, workdir=args.workdir, client=concierge_client,
+                        work_client=work_client, skills_dir=args.skills_dir)
         print(result.model_dump_json(indent=2))
         return
 

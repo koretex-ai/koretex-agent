@@ -84,3 +84,13 @@ def test_blank_work_falls_back_to_message(monkeypatch, tmp_path):
 
 def test_concierge_within_prefix_budget():
     assert profile_prefix_tokens(CONCIERGE) <= CONCIERGE.prefix_budget_tokens
+
+
+def test_concierge_client_from_env(monkeypatch):
+    from koretex_agent.client import concierge_client_from_env
+    monkeypatch.delenv("KORETEX_CONCIERGE_MODEL", raising=False)
+    assert concierge_client_from_env() is None  # unset → caller reuses the work client
+    monkeypatch.setenv("KORETEX_CONCIERGE_MODEL", "qwen3:4b")
+    monkeypatch.setenv("KORETEX_CONCIERGE_BASE_URL", "http://localhost:8080/v1")
+    c = concierge_client_from_env()
+    assert c is not None and c.cfg.model == "qwen3:4b" and "8080" in c.cfg.base_url

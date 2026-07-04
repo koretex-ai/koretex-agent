@@ -109,6 +109,22 @@ class Client:
         raise RuntimeError(f"embed failed after {self.cfg.max_retries} attempts: {last_err}")
 
 
+def concierge_client_from_env() -> "Client | None":
+    """The tier-0 concierge runs a small model LOCALLY (a bundled llama.cpp
+    server in the consumer install), separate from the network work tier — so a
+    weak device answers chat/routing on-device for free and only pays credits for
+    real work sent to the network. Returns None when unset → callers reuse the
+    work client (dev convenience, single-model behavior)."""
+    model = os.environ.get("KORETEX_CONCIERGE_MODEL")
+    if not model:
+        return None
+    return Client(ModelConfig(
+        base_url=os.environ.get("KORETEX_CONCIERGE_BASE_URL", "http://localhost:8080/v1"),
+        model=model,
+        api_key=os.environ.get("KORETEX_CONCIERGE_API_KEY", "local"),
+    ))
+
+
 def escalation_client_from_env() -> "Client | None":
     """The tier-3 client: a stronger model for irreducible steps. Configured
     separately from the work tier (its own model, and optionally its own endpoint
