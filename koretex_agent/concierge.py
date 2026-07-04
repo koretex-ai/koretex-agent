@@ -10,7 +10,6 @@ wherever `work_client` points (the Koretex network in deployment)."""
 from __future__ import annotations
 
 import json
-import re
 import sys
 import time
 import uuid
@@ -37,12 +36,7 @@ class ConciergeResult(BaseModel):
     mission: dict | None = None   # mission state, if a mission ran (routed or escalated)
     ledger: dict | None = None    # per-tier token accounting across the whole ladder
     tier_models: dict = {}        # tier name → the model that served it (for --verbose)
-    workdir: str = ""             # where task/mission output landed (dedicated dir)
-
-
-def _slug(text: str, maxlen: int = 32) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return s[:maxlen].rstrip("-") or "task"
+    workdir: str = ""             # where task/mission output landed
 
 
 # ── human-facing rendering: talk to it, don't read its JSON ─────────────────
@@ -210,12 +204,14 @@ def handle(message: str, *, workdir: str, client: Client,
 
     esc_client = escalation_client_from_env()
 
-    # A dedicated per-request output dir so work never clobbers the parent dir.
+    # Work runs in the directory the caller chose (their cwd by default, or an
+    # explicit --workdir) — no auto-generated hidden folder. Chat produces no
+    # files, so it gets no dir at all.
     job_dir = ""
     if r.decision in ("task", "mission"):
-        p = Path(workdir) / f"{_slug(work)}-{uuid.uuid4().hex[:6]}"
+        p = Path(workdir).expanduser()
         p.mkdir(parents=True, exist_ok=True)
-        job_dir = str(p)
+        job_dir = str(p.resolve())
 
     def _mission(brief):
         from .mission import Mission

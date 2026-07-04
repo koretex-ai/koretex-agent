@@ -130,7 +130,7 @@ def test_verbose_chat_shows_routing_and_ladder():
     assert "concierge · qwen3-4b" in out and "40" in out  # per-model token line
 
 
-def test_handle_creates_dedicated_workdir_and_emits_progress(monkeypatch, tmp_path):
+def test_handle_uses_given_workdir_and_emits_progress(monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.setattr(cg, "decide", lambda m, c, u=None: Route(decision="task", work="make a thing", reason="one file"))
     seen = {}
@@ -142,10 +142,15 @@ def test_handle_creates_dedicated_workdir_and_emits_progress(monkeypatch, tmp_pa
     res = cg.handle("make a thing", workdir=str(tmp_path), client=object(),
                     log_routing=False, progress=events.append)
     assert res.route == "task"
-    assert res.workdir.startswith(str(tmp_path)) and "make-a-thing-" in res.workdir
-    assert seen["workdir"] == res.workdir          # worker ran in the dedicated subdir
-    assert Path(res.workdir).is_dir()              # created, not the parent
+    assert res.workdir == str(Path(str(tmp_path)).resolve())  # the given dir, no auto-subfolder
+    assert seen["workdir"] == res.workdir                     # worker ran there
     assert "routed → task" in events and "working…" in events
+
+
+def test_chat_creates_no_workdir(monkeypatch):
+    monkeypatch.setattr(cg, "decide", lambda m, c, u=None: Route(decision="chat", reply="4", reason="q"))
+    res = cg.handle("2+2?", workdir="/tmp/should-not-be-used", client=object(), log_routing=False)
+    assert res.route == "chat" and res.workdir == ""  # a question makes nothing
 
 
 def test_render_task_shows_workdir():

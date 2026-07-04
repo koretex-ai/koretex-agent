@@ -86,10 +86,9 @@ def main() -> None:
         from .client import concierge_client_from_env
         from .concierge import handle
 
-        # Dedicated base: work lands in ~/koretex-agent-work/<slug>-<id>/, never
-        # clobbering the caller's cwd. Override with --workdir for project work.
-        base = args.workdir or str(Path.home() / "koretex-agent-work")
-        Path(base).mkdir(parents=True, exist_ok=True)
+        # Work runs where the user is (cwd) unless they name a dir with --workdir.
+        # No hidden auto-folder; chat produces no files at all.
+        base = args.workdir or str(Path.cwd())
 
         # Live progress → stderr (stdout stays clean for the reply / --json).
         quiet = args.json or os.environ.get("KORETEX_JSON")
