@@ -61,7 +61,12 @@ The live 35B mission was **89% prompt tokens** (170,940 of 192,118), compounding
 
 **Controlled A/B (`scripts/ab-elision.py`, 2026-07-04):** both arms run the SAME injected fixed plan (orchestrator skipped → no plan stochasticity) on the 35B; only elision differs. Result — **both arms `done` with a correct deliverable (no quality loss)**; totals 48,740 (off) → 40,817 (on) = −16% live; deterministic replay (noise-free, same trajectory) = **23% saved**. Batching: validators/scrutiny/**terminal review all ran in 2–4 turns** (vs the non-batched baseline's 12-turn review) — the bigger lever. Elision's win scales with turn count (23% clean worker → 67% thrashing worker). Also bumped `client.max_retries` 3→5 so transient network 5xx stop killing whole missions. Suite 103 passing.
 
-**Still open (efficiency):** (a) the orchestrator planning is thinking-on and cost ~37K/mission — a targeted lint-repair (re-emit only flagged assertions) or reduced reasoning effort could roughly halve it; (b) workers still occasionally *thrash* to the 20-turn cap on a genuinely hard step (task-difficulty, not elision) — the escape-hatch + plan-lint mitigate but don't eliminate it; (c) a per-mission prompt-amplification stat in the ledger to keep this visible.
+**Orchestrator planning — investigated, then PARKED (2026-07-04).** Added step-0 instrumentation (`state.planning`: initial vs repair model_calls + tokens) and tried **B (strip reasoning on re-send)**. Findings, all measured on the 35B dispatcher:
+- The earlier "~37K planning" was variance, not the norm. Direct instrumentation: a normal planning is **~9–10K** — **~4,600 tokens/call**, of which **~80% is the thinking block** (~3,690 completion). Total = calls × 4,600; calls = 1 + validation retries + repair.
+- **B measured 0% here** (deterministic: re-sending the plan message *with* its 3,690-tok `reasoning` field vs stripped → 940 vs 940 prompt tokens). This dispatcher bills reasoning as *completion* on generation but **ignores it as input** on re-send. **B kept as a harmless correctness guard** (helps a serving path that *does* re-tokenize reasoning); not a win here.
+- Real levers if ever un-parked: (A) `reasoning_effort:low/medium` — attacks the 80%/call thinking block, but quality-gated (needs a plan-quality A/B); (B) **retry reduction** — even a simple brief hit 1 retry (first grammar-constrained JSON failed pydantic re-validation = a wasted ~4,600-tok call); diagnosing the systematic field mismatch would be a quality-neutral win. Parked because ~9–10K/normal-mission isn't worth the quality risk right now.
+
+**Still open (efficiency, minor):** workers occasionally *thrash* to the 20-turn cap on a genuinely hard step (task-difficulty, not elision); a per-mission prompt-amplification stat in the ledger to keep wire cost visible.
 
 ### 1. Disable thinking for worker/validator; keep it for orchestrator  — ✅ DONE (2026-07-03)
 The 35B mission burned ~288K tokens largely on Qwen3.6 thinking-mode preambles across ~12 sessions. Thinking helps the orchestrator (planning judgment) but is wasteful for the mechanical worker/validator roles.
@@ -162,6 +167,6 @@ Both halves of 2b are now demonstrated. 2b is complete.
 
 ## Repo state
 - Branch: `main`, pushed to `github.com/koretex-ai/koretex-agent`.
-- Tests: 103 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
+- Tests: 107 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
 - Docs: README (architecture), phase0-findings, phase1-findings, model-eval, this file.
 - Kernel code: `koretex_agent/{client,tools,session,trajectory,mission,budget,cli,schemas,embeddings,tiers}.py` + `profiles/`.
