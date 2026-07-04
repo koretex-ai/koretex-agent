@@ -53,6 +53,16 @@ The most foundational open piece is now built. Two halves:
 
 **Still open (Phase 2 polish, lower priority):** (a) the genuine *capability-gap* escalation (standard tier fails a hard step, a **Larger** model clears it) — deferred until a BYO-key Larger endpoint exists; the calc/parser task here is too easy for the 35B, so this needs a harder task + the stronger model (tracked as the TODO in step 5); (b) a tier-1 quick-check before accepting a task result (mentioned under step 3); (c) surface the escalation-rate across many missions as the learning-loop scoreboard.
 
+### Efficiency — wire elision + batched validation — ✅ DONE (2026-07-04)
+The live 35B mission was **89% prompt tokens** (170,940 of 192,118), compounding ~O(turns²) because every agentic turn re-sends the whole transcript. Two fixes:
+
+- **Wire elision (`session._elide_stale_context`).** Keeps the last 3 *turns* full, elides the bulk of older ones on BOTH sides: stale tool *results* (reader/validator cost) and stale assistant tool_call *arguments* — chiefly `write_file` content (the writer/worker cost). **First cut was wrong** — it elided only tool results, which measured **0%** on a real worker: a worker's cost is the full file re-sent in its `write_file` args every turn. Corrected version measured **67%** on that 20-turn worker's transcript. Function name + roles/order preserved; full history still recorded to the trajectory (training data intact).
+- **Batched validation (validator.md/scrutiny.md).** "Run every check in ONE shell call, first" is now a hard first-action rule (was a soft hint the 35B ignored — terminal review took 12 turns).
+
+**Controlled A/B (`scripts/ab-elision.py`, 2026-07-04):** both arms run the SAME injected fixed plan (orchestrator skipped → no plan stochasticity) on the 35B; only elision differs. Result — **both arms `done` with a correct deliverable (no quality loss)**; totals 48,740 (off) → 40,817 (on) = −16% live; deterministic replay (noise-free, same trajectory) = **23% saved**. Batching: validators/scrutiny/**terminal review all ran in 2–4 turns** (vs the non-batched baseline's 12-turn review) — the bigger lever. Elision's win scales with turn count (23% clean worker → 67% thrashing worker). Also bumped `client.max_retries` 3→5 so transient network 5xx stop killing whole missions. Suite 103 passing.
+
+**Still open (efficiency):** (a) the orchestrator planning is thinking-on and cost ~37K/mission — a targeted lint-repair (re-emit only flagged assertions) or reduced reasoning effort could roughly halve it; (b) workers still occasionally *thrash* to the 20-turn cap on a genuinely hard step (task-difficulty, not elision) — the escape-hatch + plan-lint mitigate but don't eliminate it; (c) a per-mission prompt-amplification stat in the ledger to keep this visible.
+
 ### 1. Disable thinking for worker/validator; keep it for orchestrator  — ✅ DONE (2026-07-03)
 The 35B mission burned ~288K tokens largely on Qwen3.6 thinking-mode preambles across ~12 sessions. Thinking helps the orchestrator (planning judgment) but is wasteful for the mechanical worker/validator roles.
 
@@ -152,6 +162,6 @@ Both halves of 2b are now demonstrated. 2b is complete.
 
 ## Repo state
 - Branch: `main`, pushed to `github.com/koretex-ai/koretex-agent`.
-- Tests: 96 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
+- Tests: 103 passing (`phase0/.venv/bin/python -m pytest tests/ -q`).
 - Docs: README (architecture), phase0-findings, phase1-findings, model-eval, this file.
 - Kernel code: `koretex_agent/{client,tools,session,trajectory,mission,budget,cli,schemas,embeddings,tiers}.py` + `profiles/`.
