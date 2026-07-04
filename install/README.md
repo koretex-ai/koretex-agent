@@ -47,12 +47,15 @@ to the network and billed. See `koretex_agent.client.concierge_client_from_env`.
 
 ## Validation status
 
-- **macOS arm64 — validated end-to-end (2026-07-04).** Real run on an M3 Pro:
-  runtime tarball (`llama-b9870-bin-macos-arm64`) downloaded + `llama-server`
-  runs; Qwen3-4B gguf (2.3GB) downloaded; `config.env` written; the
-  `ai.koretex.concierge` launchd service came up serving `qwen3-4b` on :8080
-  (health ok); `koretex "what is 2+2?"` answered **locally, 447 tokens all at
-  the concierge tier, zero network spend**.
+- **macOS arm64 — validated end-to-end from scratch (2026-07-04).** Purged, then
+  a clean run with **no overrides** — the agent installed from the **v0.1.0
+  release wheel** (`github.com/koretex-ai/koretex-agent/releases`), runtime
+  tarball (`llama-b9870-bin-macos-arm64`) + `llama-server` runs, Qwen3-4B gguf
+  (2.3GB) downloaded, `config.env` written, the `ai.koretex.concierge` launchd
+  service came up serving `qwen3-4b` on :8080 (health ok), and
+  `koretex "what is 2+2?"` answered **locally, all tokens at the concierge tier,
+  zero network spend**. This is the full stranger's-path (release wheel + real
+  llama.cpp + real gguf), only the API key supplied.
 - **Linux (systemd) — not yet run** on a real box (control flow is `--dry-run`
   validated; asset naming shares the same `ubuntu`/`tar.gz` convention).
 - **Windows** — deferred to the desktop app.
