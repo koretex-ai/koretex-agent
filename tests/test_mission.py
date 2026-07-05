@@ -4,7 +4,9 @@ import json
 from unittest.mock import patch
 
 from koretex_agent import mission as mission_mod
-from koretex_agent.mission import Mission, MissionState
+from koretex_agent.cli import _resume_hint
+from koretex_agent.mission import Mission, MissionState, TaskRecord
+from koretex_agent.schemas import Assertion
 from koretex_agent.session import SessionResult
 
 
@@ -177,3 +179,67 @@ def test_second_attention_fails_task(tmp_path):
         state = m.run()
     assert state.status == "failed"
     assert state.tasks[0].status == "failed"
+
+
+# ── resume: only an interrupted (non-terminal) run, and skip cleared work ────
+def _a(i):
+    return Assertion(item_id=f"VAL-{i:03d}", statement="x", command="true")
+
+
+def _write_state(tmp_path, status, tasks, mission_id="m-old"):
+    d = tmp_path / ".mission"
+    d.mkdir(parents=True, exist_ok=True)
+    st = MissionState(mission_id=mission_id, brief="brief",
+                      workdir=str(tmp_path.resolve()), status=status, tasks=tasks)
+    (d / "state.json").write_text(st.model_dump_json(indent=1))
+    return st
+
+
+def test_resume_skips_already_cleared_tasks(tmp_path):
+    t0 = TaskRecord(task_id="T01", description="first thing", assertions=[_a(1)], status="cleared")
+    t1 = TaskRecord(task_id="T02", description="second thing", assertions=[_a(2)], status="pending")
+    _write_state(tmp_path, "running", [t0, t1])
+    with patch.object(mission_mod, "Client"):
+        m = Mission("brief", str(tmp_path), use_skills=False, synthesize_on_pass=False)
+    assert m.state.mission_id == "m-old"   # adopted the checkpoint, not a fresh mission
+    assert m.resumed_from == 1
+    # only T02's worker + its two validators + the terminal review should run
+    with patch.object(m, "_run", side_effect=_handoffs(DONE_W, PASS_V, PASS_V, PASS_V)) as run_mock:
+        state = m.run()
+    assert state.status == "done"
+    assert run_mock.call_args_list[0].args[1] == "second thing"  # T01 was NOT re-run
+
+
+def test_terminal_checkpoint_starts_fresh_and_is_archived(tmp_path):
+    _write_state(tmp_path, "done", [TaskRecord(task_id="T01", description="a", assertions=[_a(1)],
+                                               status="cleared")])
+    with patch.object(mission_mod, "Client"):
+        m = Mission("brief", str(tmp_path), use_skills=False, synthesize_on_pass=False)
+    assert m.state.mission_id != "m-old"        # did NOT replay the finished mission
+    assert m.state.status == "planning"
+    assert m.resumed_from is None
+    assert (tmp_path / ".mission" / "state.prev-m-old.json").exists()  # old one kept aside
+
+
+def test_corrupt_checkpoint_starts_fresh(tmp_path):
+    d = tmp_path / ".mission"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text("{ not valid json")
+    with patch.object(mission_mod, "Client"):
+        m = Mission("brief", str(tmp_path), use_skills=False, synthesize_on_pass=False)
+    assert m.state.status == "planning" and m.resumed_from is None
+
+
+def test_resume_hint_only_for_interrupted_run(tmp_path):
+    # no checkpoint → no hint
+    assert _resume_hint(str(tmp_path)) is None
+    # interrupted (running) → hint with progress
+    _write_state(tmp_path, "running", [TaskRecord(task_id="T01", description="a", assertions=[_a(1)],
+                                                  status="cleared"),
+                                       TaskRecord(task_id="T02", description="b", assertions=[_a(2)])])
+    hint = _resume_hint(str(tmp_path))
+    assert hint is not None and "1/2" in hint and "resume" in hint
+    # terminal (done) → no hint
+    _write_state(tmp_path, "done", [TaskRecord(task_id="T01", description="a", assertions=[_a(1)],
+                                               status="cleared")])
+    assert _resume_hint(str(tmp_path)) is None

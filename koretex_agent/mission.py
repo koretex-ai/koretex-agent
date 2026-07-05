@@ -98,14 +98,32 @@ class Mission:
             self.skills_dir = skills_dir
         self.dir = Path(workdir).resolve() / ".mission"
         self.dir.mkdir(parents=True, exist_ok=True)
-        existing = self.dir / "state.json"
-        if existing.exists():
-            self.state = MissionState.model_validate_json(existing.read_text())
+        # Resume only an *interrupted* run (a NetworkError / kill mid-mission
+        # leaves status non-terminal). A terminal (done/failed) or unreadable
+        # checkpoint is stale — archive it and start fresh — so we never replay a
+        # finished mission or silently resume an unrelated leftover in this dir.
+        self.resumed_from: int | None = None
+        prior = self._load_prior()
+        if prior is not None and prior.status in ("planning", "running", "review"):
+            self.state = prior
+            self.resumed_from = sum(1 for t in prior.tasks if t.status == "cleared")
         else:
+            if prior is not None:
+                (self.dir / f"state.prev-{prior.mission_id}.json").write_text(
+                    prior.model_dump_json(indent=1))
             self.state = MissionState(
                 mission_id=f"m-{uuid.uuid4().hex[:8]}", brief=brief, workdir=str(Path(workdir).resolve())
             )
             self._save()
+
+    def _load_prior(self) -> MissionState | None:
+        p = self.dir / "state.json"
+        if not p.exists():
+            return None
+        try:
+            return MissionState.model_validate_json(p.read_text())
+        except Exception:
+            return None  # corrupt checkpoint → treated as stale, started fresh
 
     def _save(self) -> None:
         (self.dir / "state.json").write_text(self.state.model_dump_json(indent=1))
@@ -337,6 +355,8 @@ class Mission:
 
     # ── main loop ─────────────────────────────────────────────────────────
     def run(self) -> MissionState:
+        if self.resumed_from:
+            self._emit(f"↻ resuming: {self.resumed_from}/{len(self.state.tasks)} task(s) already done")
         if self.state.status == "planning":
             self._emit("planning…")
             self.plan()

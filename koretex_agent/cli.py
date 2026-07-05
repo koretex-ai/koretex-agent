@@ -24,6 +24,26 @@ from .tools import Toolbox
 HANDOFFS = {"worker": WorkHandoff, "validator": ValidateHandoff, "scrutiny": ValidateHandoff}
 
 
+def _resume_hint(base: str) -> str | None:
+    """If an interrupted mission checkpoint sits in the workdir, tell the user
+    that re-running the same command resumes it (progress isn't lost). Terminal
+    (done/failed) checkpoints are not resumable, so they get no hint."""
+    from pathlib import Path
+    sp = Path(base).resolve() / ".mission" / "state.json"
+    if not sp.exists():
+        return None
+    try:
+        st = json.loads(sp.read_text())
+    except Exception:
+        return None
+    if st.get("status") not in ("planning", "running", "review"):
+        return None
+    tasks = st.get("tasks", [])
+    done = sum(1 for t in tasks if t.get("status") == "cleared")
+    return (f"↻ Progress saved ({done}/{len(tasks)} tasks done) — run the same command "
+            "again to resume where it stopped.")
+
+
 def _open_in_browser(path: str) -> None:
     """Best-effort launch of the default browser for a web deliverable. Never
     raises — on any failure the user just clicks the printed file:// link."""
@@ -86,9 +106,12 @@ def main() -> None:
         # Skill relevance embeds locally (see ModelConfig.embed_base_url); falls
         # back to keyword overlap if the embed model isn't available. Tier-3
         # escalation is enabled only when KORETEX_AGENT_ESCALATION_MODEL is set.
+        # Progress → stderr (stdout stays clean for the JSON), so resume and
+        # per-task transitions are visible when driving a mission directly.
         m = Mission(args.task, args.workdir, client=Client(cfg), skills_dir=args.skills_dir,
                     embedder=default_embedder(Client(cfg)),
-                    escalation_client=escalation_client_from_env())
+                    escalation_client=escalation_client_from_env(),
+                    progress=lambda msg: print(f"⋯ {msg}", file=sys.stderr, flush=True))
         state = m.run()
         print(state.model_dump_json(indent=2))
         print("\n── tier accounting ──")
@@ -125,6 +148,9 @@ def main() -> None:
             # Friendly, not a stack trace. Progress is checkpointed, so a mission
             # can be resumed by re-running the same request in the same dir.
             print(f"⚠ {e.friendly}", file=sys.stderr)
+            hint = _resume_hint(base)
+            if hint:
+                print(hint, file=sys.stderr)
             sys.exit(1)
         if args.json or os.environ.get("KORETEX_JSON"):
             print(result.model_dump_json(indent=2))
